@@ -18,11 +18,18 @@ const io = new Server(server, {
 // Serve built assets from 'dist' directory in production, otherwise serve root
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 const staticDir = isProduction ? path.join(__dirname, 'dist') : __dirname;
+console.log(`[SERVER] Environment: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
 console.log(`[SERVER] Serving static files from: ${staticDir}`);
+
 app.use(express.static(staticDir));
 if (!isProduction) {
   app.use(express.static(path.join(__dirname, 'public')));
-   }
+}
+
+// Routes for clean URLs
+app.get('/', (req, res) => {
+  res.sendFile(path.join(staticDir, 'index.html'));
+});
 
 // Routes for clean URLs
 app.get('/superadmin', (req, res) => res.sendFile(path.join(staticDir, 'pages/superadmin.html')));
