@@ -344,58 +344,92 @@ function getTotalConfiguredQs(rounds){ return rounds.reduce((s,r)=>s+(r.question
 // ─── QUIZ ADVANCE HELPER (called by BOTH team.js and admin.js) ──
 // Moves to the next question with proper cyclic team assignment.
 // MUST be called only once per question-end (guard with _advancing flag).
-function advanceToNextQuestion(){
+/**
+ * Moves to the next question with proper cyclic team assignment.
+ * fromGlobalIdx helper prevents race conditions where multiple clients advance the same question.
+ */
+function advanceToNextQuestion(fromGlobalIdx){
   const quiz = Store.getQuiz();
-  if(quiz._advancing) return;           // prevent double-call
-  quiz._advancing = true;
-  Store.saveQuiz(quiz);
+  const now = Date.now();
 
-  const rounds = Store.getRounds();
-  const questions = Store.getQuestions();
-  const teams = Store.getActiveTeams();
-  const range = getRoundQRange(rounds, quiz.currentRoundIdx);
+  // Guard: If a specific question index was expected, ensure we are still on it
+  if(fromGlobalIdx !== undefined && quiz.globalQIdx !== fromGlobalIdx) return;
 
-  // Determine the team that will START the NEXT question
-  const nextStartTeam = (quiz.questionStartTeamIdx + 1) % teams.length;
+  if(quiz._advancing){
+    if(quiz._advancingTime && (now - quiz._advancingTime > 10000)){
+       console.warn('[QUIZ] Advancement was stuck, forcing reset.');
+    } else {
+       return; 
+    }
+  }
 
-  const nextQInRound = quiz.currentQInRound + 1;
-  const nextGlobal   = quiz.globalQIdx + 1;
-  const r = rounds[quiz.currentRoundIdx];
+  try {
+    quiz._advancing = true;
+    quiz._advancingTime = now;
+    Store.saveQuiz(quiz);
 
-  if(nextQInRound >= range.count || nextGlobal >= questions.length){
-    // Round over
+    const rounds = Store.getRounds();
+    const questions = Store.getQuestions();
+    const teams = Store.getActiveTeams();
+    const range = getRoundQRange(rounds, quiz.currentRoundIdx);
+
+    if(!teams.length){
+      console.warn('[QUIZ] No active teams to advance to.');
+      quiz._advancing = false;
+      quiz._advancingTime = null;
+      Store.saveQuiz(quiz);
+      return;
+    }
+
+    const nextStartTeam = (quiz.questionStartTeamIdx + 1) % teams.length;
+    const nextQInRound = quiz.currentQInRound + 1;
+    const nextGlobal   = quiz.globalQIdx + 1;
+    const r = rounds[quiz.currentRoundIdx];
+
+    if(nextQInRound >= range.count || nextGlobal >= questions.length){
+      // Round over
+      const newQ = { ...quiz,
+        status: 'round_end',
+        passChain: [],
+        participantTurn: false,
+        participantTimerStart: null,
+        _timerEndHandled: false,
+        _participantTimerHandled: false,
+        _advancing: false,
+        _advancingTime: null
+      };
+      Store.saveQuiz(newQ);
+      Store.addActivity(`🏁 Round ${quiz.currentRoundIdx+1} ended`, 'success');
+      return;
+    }
+
     const newQ = { ...quiz,
-      status: 'round_end',
+      status: 'running',
+      currentQInRound: nextQInRound,
+      globalQIdx: nextGlobal,
+      questionStartTeamIdx: nextStartTeam,
+      currentTeamIdx: nextStartTeam,
       passChain: [],
       participantTurn: false,
       participantTimerStart: null,
+      timerStart: Date.now(),
+      timerLimit: r?.timePerQuestion || 60,
       _timerEndHandled: false,
       _participantTimerHandled: false,
       _advancing: false,
+      _advancingTime: null
     };
     Store.saveQuiz(newQ);
-    Store.addActivity(`🏁 Round ${quiz.currentRoundIdx+1} ended`, 'success');
-    return;
+    Store.addActivity(`➡ Q${nextQInRound+1} → <strong>${teams[nextStartTeam]?.name||'?'}</strong>`, 'info');
+  } catch(e) {
+    console.error('[QUIZ] Error in advanceToNextQuestion:', e);
+    const qErr = Store.getQuiz();
+    qErr._advancing = false;
+    qErr._advancingTime = null;
+    Store.saveQuiz(qErr);
   }
-
-  const newQ = { ...quiz,
-    status: 'running',
-    currentQInRound: nextQInRound,
-    globalQIdx: nextGlobal,
-    questionStartTeamIdx: nextStartTeam,
-    currentTeamIdx: nextStartTeam,
-    passChain: [],
-    participantTurn: false,
-    participantTimerStart: null,
-    timerStart: Date.now(),
-    timerLimit: r?.timePerQuestion || 60,
-    _timerEndHandled: false,
-    _participantTimerHandled: false,
-    _advancing: false,
-  };
-  Store.saveQuiz(newQ);
-  Store.addActivity(`➡ Q${nextQInRound+1} → <strong>${teams[nextStartTeam]?.name||'?'}</strong>`, 'info');
 }
+
 
 // ─── ID / AUTH / TOAST / TIME ──────────────────────────────────
 function genId(){ return '_'+Math.random().toString(36).substr(2,9); }
@@ -441,3 +475,58 @@ function onUpdate(cb){
     cb({ key: e.detail.key });
   });
 }
+
+// ─── RENDERING SHARED COMPONENTS ──────────────────────────────
+const RenderEngine = {
+  quizMap(containerId) {
+    const q = Store.getQuiz();
+    const rounds = Store.getRounds();
+    const questions = Store.getQuestions();
+    const container = document.getElementById(containerId);
+    if (!container) return;
+
+    if (q.status === 'idle' || q.status === 'finished') {
+      container.innerHTML = '';
+      return;
+    }
+
+    const curRound = rounds.find(r => r.num == q.currentRoundIdx + 1) || rounds[0];
+    if (!curRound) return;
+
+    // Total questions for this round
+    const roundQs = questions.filter(qs => qs.roundId == curRound.id).sort((a,b)=>a.id-b.id);
+    const totalInRound = roundQs.length || curRound.questionCount || 0;
+
+    let html = `
+      <div class="quiz-map-wrap">
+        <div class="qm-top">
+          <div class="qm-stage-info">
+            <span class="badge badge-purple">${curRound.stage ? curRound.stage.toUpperCase() : 'ROUND'} STAGE</span>
+            <span class="text-xs font-title text-muted" style="margin-left:8px">ROUND ${curRound.num}: ${curRound.name.toUpperCase()}</span>
+          </div>
+          <div class="text-xs text-muted font-title">QUESTION <strong>${q.currentQInRound + 1}</strong> / ${totalInRound}</div>
+        </div>
+        <div class="qm-track">
+    `;
+
+    for (let i = 0; i < totalInRound; i++) {
+       let state = 'todo';
+       if (i < q.currentQInRound) state = 'done';
+       else if (i === q.currentQInRound) state = (q.participantTurn ? 'participant' : 'current');
+       
+       html += `<div class="qm-bulb ${state}">${i+1}</div>`;
+    }
+
+    html += `
+        </div>
+        <div class="qm-legend">
+          <div class="ql-item"><span class="ql-dot" style="background:var(--success)"></span> DONE</div>
+          <div class="ql-item"><span class="ql-dot" style="background:var(--warning);box-shadow:0 0 5px var(--warning)"></span> ACTIVE</div>
+          <div class="ql-item"><span class="ql-dot" style="background:var(--primary-gradient);box-shadow:0 0 5px var(--primary)"></span> PARTICIPANT TURN</div>
+          <div class="ql-item"><span class="ql-dot" style="background:#f1f3f5"></span> UPCOMING</div>
+        </div>
+      </div>
+    `;
+    container.innerHTML = html;
+  }
+};

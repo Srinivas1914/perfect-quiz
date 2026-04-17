@@ -30,6 +30,7 @@
       <div class="nav-item" data-sec="activity" onclick="goSection('activity')"><i>📜</i><span>Activity</span></div>
       <div class="nav-item" data-sec="quiz-requests" onclick="goSection('quiz-requests')"><i>📨</i><span>Quiz Requests <span id="req-alert-badge" class="badge badge-gold hidden" style="font-size:8px;padding:1px 5px">0</span></span></div>
       <div class="nav-item" data-sec="managed-admins" onclick="goSection('managed-admins')"><i>🎓</i><span>Managed Admins</span></div>
+      <div class="nav-item" data-sec="reports" onclick="goSection('reports')"><i>📋</i><span>Quiz Reports</span></div>
       <div class="nav-item" data-sec="settings" onclick="goSection('settings')"><i>⚙️</i><span>Settings</span></div>
     </nav>
     <div class="sb-foot">
@@ -84,7 +85,13 @@
     </section>
 
     <section class="sec hidden" id="sec-users">
-      <div class="sec-head"><h2>USER MANAGEMENT</h2><button class="btn-sm btn-cyan" onclick="openAddUser()">+ NEW USER</button></div>
+      <div class="sec-head">
+        <h2>USER MANAGEMENT</h2>
+        <div style="display:flex;gap:10px">
+          <button class="btn-sm btn-red hidden" id="btn-delete-multi" onclick="deleteSelectedUsers()">🗑️ DELETE SELECTED</button>
+          <button class="btn-sm btn-cyan" onclick="openAddUser()">+ ADD USER</button>
+        </div>
+      </div>
       <div class="card"><div id="users-table"></div></div>
     </section>
 
@@ -228,6 +235,31 @@
     <section class="sec hidden" id="sec-managed-admins">
       <div class="sec-head"><h2>MANAGED ADMISSIONS</h2></div>
       <div class="card"><div id="managed-table"></div></div>
+    </section>
+
+    <!-- REPORTS -->
+    <section class="sec hidden" id="sec-reports">
+      <div class="sec-head"><h2>CONSOLIDATED QUIZ REPORTS</h2><button class="btn-sm btn-gold" onclick="downloadFullReport()">📥 DOWNLOAD ALL (CSV)</button></div>
+      <div class="card">
+        <div id="reports-table-wrap" style="overflow-x:auto">
+          <table class="dtable" id="reports-table">
+            <thead>
+              <tr>
+                <th>QUIZ ID</th>
+                <th>ADMIN / COLLEGE</th>
+                <th>TEAMS</th>
+                <th>ROUNDS</th>
+                <th>QUESTIONS</th>
+                <th>STATUS</th>
+                <th>WINNER</th>
+                <th>WIN SCORE</th>
+                <th>ACTION</th>
+              </tr>
+            </thead>
+            <tbody id="reports-body"></tbody>
+          </table>
+        </div>
+      </div>
     </section>
 
     <!-- SETTINGS -->
@@ -438,13 +470,29 @@
       <div class="form-group"><label>USERNAME</label><input type="text" id="um-user" placeholder="Username"></div>
       <div class="form-group"><label>PASSWORD</label><input type="text" id="um-pass" placeholder="Password"></div>
     </div>
-    <div class="form-group">
-      <label>ROLE</label>
-      <select id="um-role" onchange="toggleAdminFields()">
-        <option value="user">User</option>
-        <option value="participant">Participant</option>
-        <option value="admin">Admin</option>
-      </select>
+    <div class="frow">
+      <div class="form-group"><label>COLLEGE / INSTITUTION</label><input type="text" id="um-college" placeholder="College name"></div>
+      <div class="form-group"><label>DEPARTMENT</label><input type="text" id="um-dept" placeholder="e.g. Mechanical"></div>
+    </div>
+    <div class="frow">
+      <div class="form-group">
+        <label>YEAR</label>
+        <select id="um-year">
+          <option value="1">1st Year</option>
+          <option value="2">2nd Year</option>
+          <option value="3">3rd Year</option>
+          <option value="4">4th Year</option>
+          <option value="0">N/A (Faculty/Staff)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>ROLE</label>
+        <select id="um-role" onchange="toggleAdminFields()">
+          <option value="user">User</option>
+          <option value="participant">Participant</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
     </div>
     <!-- ADMIN SPECIFIC FIELDS -->
     <div id="um-admin-fields" class="hidden" style="border:1px solid var(--gold); padding:10px; border-radius:6px; margin-top:10px">

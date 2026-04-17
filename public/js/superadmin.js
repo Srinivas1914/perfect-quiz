@@ -32,6 +32,7 @@ function renderSec(id){
   if(id==='settings')   loadSettings();
   if(id==='quiz-requests') renderRequests();
   if(id==='managed-admins') renderManaged();
+  if(id==='reports')        renderReports();
 }
 
 // ─── CLOCK ────────────────────────────────────────────────────
@@ -182,11 +183,15 @@ function renderUsers(){
   const assignedIds=new Set();
   teams.forEach(t=>(t.memberIds||[]).forEach(id=>assignedIds.add(id)));
 
-  el.innerHTML=`<table class="dtable"><thead><tr><th>#</th><th>NAME</th><th>USERNAME</th><th>ROLL</th><th>ROLE</th><th>IN TEAM</th><th>REGISTERED</th><th></th></tr></thead><tbody>`+
+  el.innerHTML=`<table class="dtable" id="u-table-root"><thead><tr>
+      <th><input type="checkbox" id="user-sel-all" onclick="toggleAllUsers(this.checked)"></th>
+      <th>#</th><th>NAME</th><th>USERNAME</th><th>ROLL</th><th>ROLE</th><th>IN TEAM</th><th>REGISTERED</th><th></th></tr></thead><tbody>`+
   users.map((u,i)=>{
     const inTeam=assignedIds.has(u.id);
     const tn=inTeam?teams.find(t=>(t.memberIds||[]).includes(u.id))?.name:'';
-    return `<tr><td class="text-muted text-xs">${i+1}</td><td><strong>${u.name}</strong></td>
+    return `<tr>
+      <td><input type="checkbox" class="user-sel" value="${u.id}" onclick="updateCheckSelection()"></td>
+      <td class="text-muted text-xs">${i+1}</td><td><strong>${u.name}</strong></td>
       <td class="text-cyan font-mono text-xs">${u.username}</td><td class="text-muted text-sm">${u.roll}</td>
       <td><select class="role-select" onchange="changeUserRole('${u.id}',this.value)">
         <option value="user" ${u.role==='user'?'selected':''}>User</option>
@@ -197,6 +202,33 @@ function renderUsers(){
       <td class="text-xs text-muted">${new Date(u.registeredAt||0).toLocaleDateString('en-IN')}</td>
       <td><button class="btn-icon" onclick="openEditUser('${u.id}')">✏️</button><button class="btn-icon" onclick="deleteUser('${u.id}')">🗑️</button></td></tr>`;
   }).join('')+'</tbody></table>';
+  updateCheckSelection();
+}
+
+function toggleAllUsers(chk){
+  document.querySelectorAll('.user-sel').forEach(el => el.checked = chk);
+  updateCheckSelection();
+}
+
+function updateCheckSelection(){
+  const checked = document.querySelectorAll('.user-sel:checked');
+  const btn = document.getElementById('btn-delete-multi');
+  if(btn){
+    btn.classList.toggle('hidden', checked.length === 0);
+    btn.textContent = `🗑️ DELETE SELECTED (${checked.length})`;
+  }
+}
+
+function deleteSelectedUsers(){
+  const checked = [...document.querySelectorAll('.user-sel:checked')].map(el => el.value);
+  if(!checked.length) return;
+  customConfirm(`Delete <strong>${checked.length} selected users</strong>?`, '🗑️', () => {
+    const all = Store.getUsers();
+    const filtered = all.filter(u => !checked.includes(u.id));
+    Store.saveUsers(filtered);
+    toast(`${checked.length} users deleted`, 'warning');
+    renderUsers();
+  });
 }
 function toggleAdminFields(){
   const role = document.getElementById('um-role').value;
@@ -212,10 +244,9 @@ function openAddUser(){
   document.getElementById('um-pass').value='';
   document.getElementById('um-role').value='user';
   
-  // Reset admin fields
-  document.getElementById('um-admin-college').value='';
-  document.getElementById('um-admin-code').value='';
-  document.getElementById('um-admin-quizid').value='';
+  document.getElementById('um-college').value='';
+  document.getElementById('um-dept').value='';
+  document.getElementById('um-year').value='1';
   
   document.getElementById('um-err').textContent='';
   document.getElementById('user-modal-title').textContent='CREATE USER';
@@ -234,6 +265,9 @@ function openEditUser(id){
   document.getElementById('um-user').value=u.username;
   document.getElementById('um-pass').value=u.password;
   document.getElementById('um-role').value=u.role;
+  document.getElementById('um-college').value=u.college||'';
+  document.getElementById('um-dept').value=u.dept||'';
+  document.getElementById('um-year').value=u.year||'1';
   
   // Populate admin fields if editing an admin
   const managed = Store.getManagedQuizzes();
@@ -265,15 +299,19 @@ function saveUser(){
   const username=document.getElementById('um-user').value.trim();
   const password=document.getElementById('um-pass').value.trim();
   const role=document.getElementById('um-role').value;
+  const college=document.getElementById('um-college').value.trim();
+  const dept=document.getElementById('um-dept').value.trim();
+  const year=document.getElementById('um-year').value;
+
   const adminCollege = document.getElementById('um-admin-college').value.trim();
   const adminCode = document.getElementById('um-admin-code').value.trim();
   const adminQuizId = document.getElementById('um-admin-quizid').value.trim().toUpperCase();
 
   const err=document.getElementById('um-err');
-  if(!name||!roll||!username||!password){ err.textContent='All fields are required.'; return; }
+  if(!name||!roll||!username||!password||!college||!dept){ err.textContent='All fields are required.'; return; }
   
   if(role === 'admin' && (!adminCollege || !adminCode)){
-    err.textContent = 'College name and code are required for Admins.';
+    err.textContent = 'College name and code are required for Admins (in session details).';
     return;
   }
 
@@ -283,7 +321,7 @@ function saveUser(){
   const userId = id || genId();
 
   if(id){
-    Store.updateUser(id,{name,roll,username,password,role});
+    Store.updateUser(id,{name,roll,username,password,role,college,dept,year});
     toast('User updated!','success');
     
     // Manage quiz session for admin
@@ -310,7 +348,7 @@ function saveUser(){
       Store.addActivity(`Admin session <strong>${quizId}</strong> updated for <strong>${name}</strong>`,'success');
     }
   } else {
-    Store.addUser({id:userId,name,roll,username,password,role,registeredAt:Date.now()});
+    Store.addUser({id:userId,name,roll,username,password,role,college,dept,year,registeredAt:Date.now()});
     toast('User created!','success');
     Store.addActivity(`User <strong>${name}</strong> created by Superadmin`,'success');
     
@@ -328,7 +366,10 @@ function saveUser(){
       Store.addActivity(`Quiz <strong>${quizId}</strong> manual generated for new admin <strong>${name}</strong>`,'success');
     }
   }
-  closeModal('modal-user'); renderUsers();
+  closeModal('modal-user'); 
+  renderUsers();
+  // Ensure the managed admins table is updated if role was admin
+  if(role === 'admin') renderManaged();
 }
 function changeUserRole(id,role){ 
   const oldU = Store.getUserById(id);
@@ -1227,9 +1268,10 @@ setInterval(()=>{
 },1000);
 
 onUpdate(({key})=>{
-  if(key===KEYS.QUIZ||key===KEYS.TEAMS||key===KEYS.LOGIN_STATUS){ 
+  if(key===KEYS.QUIZ||key===KEYS.TEAMS||key===KEYS.LOGIN_STATUS || key.includes('sq_quiz_') || key.includes('sq_teams_')){ 
     if(currentSec==='control') renderControl(); 
     if(currentSec==='dashboard') renderDashboard(); 
+    if(currentSec==='reports') renderReports();
   }
   if(key===KEYS.USERS){
     if(currentSec==='users') renderUsers();
@@ -1237,6 +1279,7 @@ onUpdate(({key})=>{
   if(key===KEYS.QUIZ_REQUESTS || key===KEYS.MANAGED_QUIZZES){
     if(currentSec==='quiz-requests') renderRequests();
     if(currentSec==='managed-admins') renderManaged();
+    if(currentSec==='reports') renderReports();
     renderAlertsBadge();
   }
 });
@@ -1446,6 +1489,175 @@ function removeManagedQuiz(quizId){
     toast('Session removed','warning');
     renderManaged();
   });
+}
+
+// ─── REPORTS ──────────────────────────────────────────────────
+function getConsolidatedReportData(){
+  const managed = Store.getManagedQuizzes();
+  const users = Store.getUsers();
+  
+  return managed.map(m => {
+    const qid = m.quizId;
+    const quizState = load(`${KEYS.QUIZ}_${qid}`, DEFAULT_QUIZ);
+    const teams = load(`${KEYS.TEAMS}_${qid}`, []);
+    const rounds = load(`${KEYS.ROUNDS}_${qid}`, []);
+    const questions = load(`${KEYS.QUESTIONS}_${qid}`, []);
+    
+    // Find Administrative context
+    const adminUser = users.find(u => u.id === m.adminId);
+    const adminName = adminUser ? adminUser.name : 'Unknown';
+    
+    // Calculate Winner
+    const sortedTeams = [...teams].sort((a,b) => (b.score||0) - (a.score||0));
+    const winner = sortedTeams.length ? sortedTeams[0] : null;
+    
+    return {
+      quizId: qid,
+      admin: adminName,
+      college: m.collegeName,
+      status: quizState.status,
+      teamCount: teams.length,
+      roundCount: rounds.length,
+      questionCount: questions.length,
+      winnerName: winner ? winner.name : 'N/A',
+      winnerScore: winner ? (winner.score || 0) : 0
+    };
+  });
+}
+
+function renderReports(){
+  const data = getConsolidatedReportData();
+  const tbody = document.getElementById('reports-body');
+  if(!tbody) return;
+  
+  if(!data.length){
+    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted p-12">No quiz data found to report.</td></tr>';
+    return;
+  }
+  
+  tbody.innerHTML = data.map(r => `
+    <tr>
+      <td class="font-title text-gold text-sm">${r.quizId}</td>
+      <td>
+        <div class="font-title text-xs text-white">${r.admin.toUpperCase()}</div>
+        <div class="text-xs text-muted">${r.college}</div>
+      </td>
+      <td class="text-center"><span class="badge badge-cyan">${r.teamCount}</span></td>
+      <td class="text-center"><span class="badge badge-purple">${r.roundCount}</span></td>
+      <td class="text-center"><span class="badge badge-gold">${r.questionCount}</span></td>
+      <td><span class="badge ${r.status==='finished'?'badge-green':'badge-gray'}">${r.status.toUpperCase()}</span></td>
+      <td class="text-cyan"><strong>${r.winnerName}</strong></td>
+      <td class="text-green font-title">${r.winnerScore}</td>
+      <td>
+        <button class="btn-icon" onclick="downloadIndividualReport('${r.quizId}')" title="Summary CSV">📊</button>
+        <button class="btn-icon" onclick="downloadDetailedCSV('${r.quizId}')" title="Detailed Grid CSV" style="color:var(--purple)">📑</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function downloadIndividualReport(quizId){
+  const data = getConsolidatedReportData().find(r => r.quizId === quizId);
+  if(!data){ toast('No data for this quiz', 'error'); return; }
+  
+  const headers = ['METRIC', 'VALUE'];
+  const rows = [
+    ['QUIZ ID', data.quizId],
+    ['ADMIN', data.admin],
+    ['COLLEGE', data.college],
+    ['STATUS', data.status.toUpperCase()],
+    ['TOTAL TEAMS', data.teamCount],
+    ['TOTAL ROUNDS', data.roundCount],
+    ['TOTAL QUESTIONS', data.questionCount],
+    ['WINNER NAME', data.winnerName],
+    ['WINNER SCORE', data.winnerScore]
+  ];
+  
+  // Also add detailed team scores
+  const teams = Store.getTeams(quizId);
+  if(teams.length){
+    rows.push(['---', '---']);
+    rows.push(['TEAM NAME', 'SCORE']);
+    teams.forEach(t => {
+      rows.push([t.name, t.score || 0]);
+    });
+  }
+
+  const csvContent = [
+    headers.join(','),
+    ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+  ].join('\n');
+  
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `Quiz_Report_${quizId}_${new Date().toISOString().slice(0,10)}.csv`);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  toast('Individual report downloaded!', 'success');
+}
+
+function downloadDetailedCSV(quizId) {
+  const ps = Store.getParticipants(quizId);
+  const qs = Store.getQuestions(quizId);
+  if(!ps.length) { toast('No participant data for this quiz.', 'warning'); return; }
+
+  let csv = "Roll Number,Name," + qs.map((_, i) => `Q${i+1}`).join(",") + ",Total,Percentage\n";
+  ps.forEach(p => {
+    let total = 0;
+    const ans = p.answers || {};
+    const row = [p.roll || p.username, p.name];
+    qs.forEach((q, i) => {
+      const res = ans[i];
+      if(res && res.ok) total++;
+      row.push(res ? (res.ok ? "1" : "0") : "—");
+    });
+    row.push(total);
+    row.push(qs.length ? ((total / qs.length) * 100).toFixed(2) + "%" : "0%");
+    csv += row.join(",") + "\n";
+  });
+
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `detailed_report_${quizId}_${Date.now()}.csv`;
+  a.click();
+  toast('Detailed report exported!', 'success');
+}
+
+function downloadFullReport(){
+  const data = getConsolidatedReportData();
+  if(!data.length){ toast('No data to export', 'error'); return; }
+  
+  const headers = ['QUIZ ID', 'ADMIN', 'COLLEGE', 'STATUS', 'TEAMS', 'ROUNDS', 'QUESTIONS', 'WINNER', 'WINNER SCORE'];
+  const csvContent = [
+    headers.join(','),
+    ...data.map(r => [
+      r.quizId,
+      `"${r.admin}"`,
+      `"${r.college}"`,
+      r.status.toUpperCase(),
+      r.teamCount,
+      r.roundCount,
+      r.questionCount,
+      `"${r.winnerName}"`,
+      r.winnerScore
+    ].join(','))
+  ].join('\n');
+  
+  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.setAttribute('href', url);
+  link.setAttribute('download', `Consolidated_Quiz_Report_${new Date().toISOString().slice(0,10)}.csv`);
+  link.style.visibility = 'hidden';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  toast('Report downloaded!', 'success');
 }
 
 document.querySelectorAll('.modal-bg').forEach(m=>m.addEventListener('click',e=>{ if(e.target===m) m.classList.remove('open'); }));

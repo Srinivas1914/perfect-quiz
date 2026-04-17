@@ -139,6 +139,7 @@ function render(){
 
   // Always render scoreboard
   renderScoreboard();
+  RenderEngine.quizMap('quiz-map-container');
 
   if(quiz.status==='idle'){
     showPState('waiting');
@@ -280,13 +281,8 @@ function tickParticipantTimer(quiz){
     renderAnswerPhase(q2,Store.getQuestions()[q2.globalQIdx]||{options:[],correct:[]},Store.getRounds());
     const rem=q2.participantTimerStart?Math.max(0,q2.participantTimeLimit-Math.floor((Date.now()-q2.participantTimerStart)/1000)):0;
     if(rem<=0 && !q2._participantTimerHandled){
-      const q3=Store.getQuiz(); 
-      if(!q3._participantTimerHandled && q3.status==='participant_turn'){
-        q3._participantTimerHandled=true; Store.saveQuiz(q3);
-        Store.addActivity('⏰ Participant time up → next question','warning');
-        advanceToNextQuestion();
-      }
-      clearInterval(timerIv);
+      Store.addActivity('⏰ Participant time up → next question','warning');
+      advanceToNextQuestion(q2.globalQIdx);
     }
   },500);
 }
@@ -324,7 +320,7 @@ function submitParticipant(){
   // Save answer
   const p=Store.getParticipantById(userId)||{score:0,correctCount:0,answers:{}};
   const answers={...(p.answers||{})}; answers[quiz.globalQIdx]=pSel;
-  Store.upsertParticipant(userId,session.name,{answers,score:(p.score||0)+(ok?5:0),correctCount:(p.correctCount||0)+(ok?1:0)});
+  Store.upsertParticipant(userId,session.name,{answers,score:(p.score||0)+(ok?5:0),correctCount:(p.correctCount||0)+(ok?1:0),roll:session.roll});
 
   Store.addActivity(`[P] <strong>${session.name}</strong> Q${quiz.currentQInRound+1}: ${ok?'✓ CORRECT':'✗ WRONG'}`,ok?'success':'error');
 
@@ -336,7 +332,8 @@ function submitParticipant(){
 
   // If correct → advance quiz immediately from participant side
   if(ok){
-    setTimeout(()=>advanceToNextQuestion(),1800);
+    const qid = quiz.globalQIdx;
+    setTimeout(()=>advanceToNextQuestion(qid),1800);
   }
 }
 

@@ -107,6 +107,7 @@ function render(){
 
   // Always render scoreboard regardless of state
   renderScoreboard();
+  RenderEngine.quizMap('quiz-map-container');
 
   if(quiz.status==='idle'){
     showState('waiting');
@@ -225,12 +226,8 @@ function renderParticipantTurnView(quiz,q,rounds){
     </div>
     <div class="text-muted text-sm text-center">Next question starts automatically when time expires.</div>`;
   if(rem<=0 && !quiz._participantTimerHandled){
-    const q3=Store.getQuiz(); 
-    if(!q3._participantTimerHandled && q3.status==='participant_turn'){
-      q3._participantTimerHandled=true; Store.saveQuiz(q3);
-      Store.addActivity('⏰ Participant time up → next question','warning');
-      advanceToNextQuestion();
-    }
+    Store.addActivity('⏰ Participant time up → next question','warning');
+    advanceToNextQuestion(quiz.globalQIdx);
   }
   // Keep updating the timer in this state
   clearTimeout(window._ptRefreshTO);
@@ -311,7 +308,7 @@ function submitAns(){
   // Otherwise, trigger the pass logic (which goes either to the next team or the audience).
   setTimeout(()=>{
     if(ok) {
-      advanceToNextQuestion();
+      advanceToNextQuestion(quiz.globalQIdx);
     } else {
       // For consistency, a wrong answer now behaves like a pass (goes to bonus team or audience)
       passQ();

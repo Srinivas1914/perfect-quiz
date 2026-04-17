@@ -54,7 +54,7 @@
         </div>
       </div>
     </header>
-
+    <div id="quiz-map-container"></div>
     <!-- DASHBOARD -->
     <section class="sec" id="sec-dashboard">
       <div class="sec-head"><h2>DASHBOARD</h2></div>
@@ -94,6 +94,19 @@
       <div class="card mt-2">
         <div class="card-head"><span class="card-title">PARTICIPANT FEEDBACK</span></div>
         <div id="d-feedback" style="padding:10px;max-height:300px;overflow-y:auto"></div>
+      </div>
+      <div class="dash-grid mt-2">
+        <div class="card">
+          <div class="card-head"><span class="card-title">📈 performance OVERVIEW</span></div>
+          <div style="padding:15px">
+            <div id="d-perform-summary" class="info-list"></div>
+            <button class="btn-main mt-1" style="height:34px; font-size:11px" onclick="goSection('reports'); generateDetailedReport()">VIEW DETAILED ANALYSIS</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><span class="card-title">🏆 TOP 5 PERFORMERS</span></div>
+          <div id="d-top-performers" style="padding:8px"></div>
+        </div>
       </div>
     </section>
 
@@ -240,6 +253,7 @@
         <div style="display:flex;gap:8px">
           <button class="btn-sm btn-cyan" onclick="generateReport('summary')">GIVE SUMMARY REPORT</button>
           <button class="btn-sm btn-gold" onclick="generateReport('overall')">GIVE OVERALL REPORT</button>
+          <button class="btn-sm btn-purple" onclick="generateDetailedReport()">DETAILED PERFORMANCE REPORT</button>
         </div>
       </div>
       <div class="dash-grid">
@@ -250,7 +264,7 @@
           </div>
           <div id="report-actions" class="p-12 border-t hidden" style="display:flex; gap:10px">
             <button class="btn-main btn-green" onclick="saveReportToDB()" style="flex:1">SAVE TO DATABASE</button>
-            <button class="btn-main btn-cyan" onclick="downloadReport()" style="flex:1">DOWNLOAD REPORT</button>
+            <button class="btn-main btn-gold" onclick="downloadCSV()" style="flex:1">EXPORT TO CSV</button>
           </div>
         </div>
         <div class="card">
@@ -473,13 +487,29 @@
       <div class="form-group"><label>USERNAME</label><input type="text" id="um-user" placeholder="Username"></div>
       <div class="form-group"><label>PASSWORD</label><input type="text" id="um-pass" placeholder="Password"></div>
     </div>
-    <div class="form-group">
-      <label>ROLE</label>
-      <select id="um-role">
-        <option value="user">User</option>
-        <option value="participant">Participant</option>
-        <option value="admin">Admin</option>
-      </select>
+    <div class="frow">
+      <div class="form-group"><label>COLLEGE</label><input type="text" id="um-college" placeholder="College name"></div>
+      <div class="form-group"><label>DEPARTMENT</label><input type="text" id="um-dept" placeholder="e.g. Mechanical"></div>
+    </div>
+    <div class="frow">
+      <div class="form-group">
+        <label>YEAR</label>
+        <select id="um-year">
+          <option value="1">1st Year</option>
+          <option value="2">2nd Year</option>
+          <option value="3">3rd Year</option>
+          <option value="4">4th Year</option>
+          <option value="0">N/A (Faculty/Staff)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>ROLE</label>
+        <select id="um-role">
+          <option value="user">User</option>
+          <option value="participant">Participant</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
     </div>
     <div id="um-err" class="err-msg"></div>
     <button class="btn-main btn-green" onclick="saveUser()">SAVE USER</button>

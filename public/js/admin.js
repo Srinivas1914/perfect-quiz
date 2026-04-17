@@ -117,6 +117,46 @@ function renderDashboard(){
   renderSpeedWinners();
   renderLoginRecords();
   renderAlertsBadge();
+  renderPerformanceSummary();
+  renderTopPerformers();
+}
+
+function renderPerformanceSummary(){
+  const ps = Store.getParticipants();
+  const el = document.getElementById('d-perform-summary');
+  if(!el) return;
+  if(!ps.length){ el.innerHTML = '<div class="text-muted text-xs">No data.</div>'; return; }
+  
+  let totalCorrect = 0, totalAns = 0;
+  ps.forEach(p => {
+    Object.values(p.answers||{}).forEach(a => { totalAns++; if(a.ok) totalCorrect++; });
+  });
+  const avg = totalAns ? ((totalCorrect / totalAns) * 100).toFixed(1) : 0;
+
+  el.innerHTML = `
+    <div class="info-row"><span>Total Participants</span><span class="badge badge-cyan">${ps.length}</span></div>
+    <div class="info-row"><span>Average Accuracy</span><span class="text-green font-title">${avg}%</span></div>
+    <div class="info-row"><span>Questions Attempted</span><span>${totalAns}</span></div>
+  `;
+}
+
+function renderTopPerformers(){
+  const el = document.getElementById('d-top-performers');
+  if(!el) return;
+  const ps = Store.getParticipants();
+  const top = [...ps].sort((a,b) => {
+    const sA = Object.values(a.answers||{}).filter(x=>x.ok).length;
+    const sB = Object.values(b.answers||{}).filter(x=>x.ok).length;
+    return sB - sA;
+  }).slice(0, 5);
+
+  el.innerHTML = top.length ? `<table class="dtable">
+    <thead><tr><th>RANK</th><th>NAME</th><th>SCORE</th></tr></thead>
+    <tbody>${top.map((p,i)=>{
+      const score = Object.values(p.answers||{}).filter(x=>x.ok).length;
+      return `<tr><td class="font-title text-xs">#${i+1}</td><td>${p.name}</td><td class="font-title text-green">${score}</td></tr>`;
+    }).join('')}</tbody>
+  </table>` : '<div class="empty-state">No performance data yet</div>';
 }
 
 function renderTeamActivityGrid(){
@@ -265,6 +305,9 @@ function openAddUser(){
   document.getElementById('um-user').value='';
   document.getElementById('um-pass').value='';
   document.getElementById('um-role').value='user';
+  document.getElementById('um-college').value='';
+  document.getElementById('um-dept').value='';
+  document.getElementById('um-year').value='1';
   document.getElementById('um-err').textContent='';
   document.getElementById('user-modal-title').textContent='CREATE USER';
   
@@ -280,6 +323,9 @@ function openAddUser(){
   document.getElementById('um-user').value=u.username;
   document.getElementById('um-pass').value=u.password;
   document.getElementById('um-role').value=u.role;
+  document.getElementById('um-college').value=u.college||'';
+  document.getElementById('um-dept').value=u.dept||'';
+  document.getElementById('um-year').value=u.year||'1';
   document.getElementById('um-err').textContent='';
   document.getElementById('user-modal-title').textContent='EDIT USER';
 
@@ -296,15 +342,20 @@ function saveUser(){
   const username=document.getElementById('um-user').value.trim();
   const password=document.getElementById('um-pass').value.trim();
   const role=document.getElementById('um-role').value;
+  const college=document.getElementById('um-college').value.trim();
+  const dept=document.getElementById('um-dept').value.trim();
+  const year=document.getElementById('um-year').value;
+
   const err=document.getElementById('um-err');
-  if(!name||!roll||!username||!password){ err.textContent='All fields are required.'; return; }
+  if(!name||!roll||!username||!password||!college||!dept){ err.textContent='All fields are required.'; return; }
   const users=Store.getUsers();
   // if(users.find(u=>u.username===username&&u.id!==id)){ err.textContent='Username taken.'; return; }
   if(id){
-    Store.updateUser(id,{name,roll,username,password,role});
+    Store.updateUser(id,{name,roll,username,password,role,college,dept,year});
     toast('User updated!','success');
   } else {
-    Store.addUser({id:genId(),name,roll,username,password,role,registeredAt:Date.now()});
+    const newUser = {id:genId(),name,roll,username,password,role,college,dept,year,registeredAt:Date.now(),currentQuizId:Store.getSession().quizId};
+    Store.addUser(newUser);
     toast('User created!','success');
     Store.addActivity(`User <strong>${name}</strong> created by admin`,'success');
   }
@@ -833,7 +884,11 @@ function tickAdminTimer(){
     if(ptWrap) ptWrap.style.display='block';
     if(ptEl){ ptEl.textContent=rem; ptEl.className='timer-big'+(rem<=5?' danger':rem<=10?' warn':''); }
     if(ptBar){ ptBar.style.width=((rem/quiz.participantTimeLimit)*100)+'%'; ptBar.className='tbar'+(rem<=5?' tbar-danger':rem<=10?' tbar-warn':''); }
-    if(rem===0&&!quiz._participantTimerHandled){ const q2=Store.getQuiz(); q2._participantTimerHandled=true; Store.saveQuiz(q2); Store.addActivity('⏰ Participant time up → next question','warning'); advanceToNextQuestion(); renderControl(); }
+    if(rem===0&&!quiz._participantTimerHandled){ 
+      Store.addActivity('⏰ Participant time up → next question','warning'); 
+      advanceToNextQuestion(quiz.globalQIdx); 
+      renderControl(); 
+    }
   } else { if(ptWrap) ptWrap.style.display='none'; }
 
   if(quiz.status!=='running'){ if(timerEl){timerEl.textContent=quiz.timerLimit||'—';timerEl.className='timer-big';} if(bar){bar.style.width='100%';bar.className='tbar';} if(rtEl) rtEl.textContent=''; return; }
@@ -917,8 +972,9 @@ function quizPause(){ const quiz=Store.getQuiz(); quiz.status='paused'; quiz._pa
 function quizResume(){ const quiz=Store.getQuiz(); const dur=quiz._pausedAt?Date.now()-quiz._pausedAt:0; quiz.timerStart=(quiz.timerStart||Date.now())+dur; if(quiz.roundTimerStart)quiz.roundTimerStart+=dur; if(quiz.participantTimerStart)quiz.participantTimerStart+=dur; quiz.status='running'; quiz._timerEndHandled=false; delete quiz._pausedAt; Store.saveQuiz(quiz); toast('Resumed!','success'); renderControl(); }
 
 function quizNext(){
+  const quiz = Store.getQuiz();
   // Manual advance — treated as "move on regardless"
-  advanceToNextQuestion();
+  advanceToNextQuestion(quiz.globalQIdx);
   renderControl();
 }
 
@@ -1205,6 +1261,7 @@ onUpdate(({key})=>{
   if(isK(KEYS.QUIZ)||isK(KEYS.TEAMS)||isK(KEYS.LOGIN_STATUS)){ 
     if(currentSec==='control') renderControl(); 
     if(currentSec==='dashboard') renderDashboard(); 
+    RenderEngine.quizMap('quiz-map-container');
   }
   if(isK(KEYS.USERS) || isK(KEYS.MANAGED_QUIZZES)) {
     initAdminInfo();
@@ -1404,11 +1461,44 @@ function viewSavedReport(report) {
   
   const teams = report.data.teams;
   const rounds = report.data.rounds;
+  const participants = report.data.participants;
+  const qCount = report.data.questionCount;
 
   // Set as current for download
   currentReportData = report;
   
-  if (report.type === 'summary') {
+  if (report.type === 'detailed') {
+    let html = `<div class="text-xs text-muted mb-4">Saved on ${new Date(report.timestamp).toLocaleString()}</div>
+    <div style="overflow-x:auto">
+      <table class="full-w text-sm report-grid">
+        <thead>
+          <tr>
+            <th>ROLL NUMBER</th>
+            <th>NAME</th>
+            ${Array.from({length: qCount}, (_, i) => `<th>Q${i+1}</th>`).join('')}
+            <th>TOTAL</th>
+          </tr>
+        </thead>
+        <tbody>`;
+    
+    participants.forEach(p => {
+      let total = 0;
+      const ans = p.answers || {};
+      html += `<tr>
+        <td class="font-mono"><strong>${p.roll}</strong></td>
+        <td>${p.name}</td>
+        ${Array.from({length: qCount}, (_, i) => {
+          const res = ans[i];
+          const isOk = res && res.ok;
+          if(isOk) total++;
+          return `<td>${res ? (isOk ? '<span class="text-green">1</span>' : '<span class="text-red">0</span>') : '—'}</td>`;
+        }).join('')}
+        <td><strong class="text-gold">${total}</strong></td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>`;
+    reportView.innerHTML = html;
+  } else if (report.type === 'summary') {
     let html = `<div class="text-xs text-muted mb-2">Saved on ${new Date(report.timestamp).toLocaleString()}</div>
     <table class="full-w text-sm">
       <thead>

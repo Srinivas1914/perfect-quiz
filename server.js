@@ -57,9 +57,9 @@ app.post('/api/login', (req, res) => {
   const user = users.find(u => u.username === username && u.password === password);
 
   if (user) {
-    const claims = { userId: user.id, role: user.role, name: user.name, quizId: quizId || user.currentQuizId };
+    const claims = { userId: user.id, role: user.role, name: user.name, roll: user.roll, college: user.college, quizId: quizId || user.currentQuizId };
     const token = jwt.sign(claims, JWT_SECRET, { expiresIn: '24h' });
-    return res.json({ success: true, token, session: { role: user.role, userId: user.id, name: user.name, quizId: user.currentQuizId } });
+    return res.json({ success: true, token, session: { role: user.role, userId: user.id, name: user.name, roll: user.roll, college: user.college, quizId: user.currentQuizId } });
   }
 
   // 3. Check Teams
@@ -211,6 +211,12 @@ async function syncToCollections(key, val) {
       for (const q of data) {
         await QuestionModel.findOneAndUpdate({ id: q.id }, { ...q, quizId: qid }, { upsert: true });
       }
+    } else if (key.startsWith('sq_participants')) {
+      const qid = key.split('_')[2];
+      for (const p of data) {
+        await mongoose.model('Participant', new mongoose.Schema({ id: String, name: String, roll: String, score: Number, quizId: String, answers: Object }, { timestamps: true, strict: false }))
+          .findOneAndUpdate({ id: p.id, quizId: qid }, { ...p, quizId: qid }, { upsert: true });
+      }
     }
   } catch (e) {
     // console.log('Key not in structured format, skipping mirror');
@@ -218,25 +224,57 @@ async function syncToCollections(key, val) {
 }
 
 async function connectDB() {
-  try {
-    console.log('[SERVER] Connecting to MongoDB...');
-    await mongoose.connect(mongoUri, {
-      serverSelectionTimeoutMS: 5000,
-      autoIndex: true,
-    });
-    console.log('[SERVER] ✅ Connected to MongoDB');
-    await initializeData();
-    startServer();
-  } catch (err) {
-    console.error('[SERVER] ❌ MongoDB Connection Failed!');
-    console.error(`       URI: ${mongoUri}`);
-    console.error(`       Error: ${err.message}`);
-    console.log('\n[TIP] Check if MongoDB is installed and running.');
-    console.log('[TIP] You can install MongoDB Compass to manage your database easily.\n');
-    console.log('[SERVER] Server starting in LIMITED/LOCAL mode without persistence...');
-    startServer();
-  }
+  const options = {
+    serverSelectionTimeoutMS: 10000,
+    socketTimeoutMS: 45000,
+  };
+
+  const attemptConnect = async () => {
+    try {
+      console.log(`[SERVER] 🔌 Attempting to connect to MongoDB...`);
+      await mongoose.connect(mongoUri, options);
+      console.log('[SERVER] ✅ Connected to MongoDB');
+      
+      // Initialize after connection
+      await initializeData();
+      
+      // If server isn't started yet, start it
+      if (!server.listening) {
+        startServer();
+      }
+    } catch (err) {
+      console.error('[SERVER] ❌ MongoDB Connection Failed!');
+      console.error(`       Error: ${err.message}`);
+      
+      // Detailed advice based on connection string
+      if (mongoUri.includes('mongodb.net')) {
+        console.log('[TIP] You are using MongoDB Atlas. Ensure your current IP is WHITELISTED in Atlas Network Access settings.');
+      } else {
+        console.log('[TIP] Ensure your local MongoDB service is running (mongod).');
+      }
+      
+      console.log('[SERVER] Retrying connection in 5 seconds...');
+      setTimeout(attemptConnect, 5000);
+      
+      // Start server anyway so the quiz can work in memory, but warn about persistence
+      if (!server.listening) {
+        console.warn('[SERVER] ⚠️ Starting server in MEMORY-ONLY mode (Persistence Pending Connection)');
+        startServer();
+      }
+    }
+  };
+
+  attemptConnect();
 }
+
+// Handle connection events for live updates
+mongoose.connection.on('disconnected', () => {
+  console.warn('[SERVER] ❗ MongoDB Disconnected. Persistence paused.');
+});
+
+mongoose.connection.on('reconnected', () => {
+  console.log('[SERVER] ♻️ MongoDB Reconnected. Persistence resumed.');
+});
 
 
 
@@ -268,13 +306,23 @@ async function initializeData() {
 
 async function saveData(key, val) {
   try {
-    // Only attempt save if MongoDB is connected
-    if (mongoose.connection.readyState === 1) {
+    // We update local memory first for instant UI response
+    syncData[key] = val;
+
+    // Check connection state
+    const state = mongoose.connection.readyState;
+    
+    // If connected (1) or connecting (2), we let Mongoose handle it (with buffering)
+    if (state === 1 || state === 2) {
       await StorageModel.findOneAndUpdate({ key }, { val }, { upsert: true });
-      // NEW: Also mirror to structured collections for better queries/validation
       await syncToCollections(key, val);
     } else {
-      console.warn(`[SERVER] Skipping MongoDB save for ${key} (No Connection)`);
+      // If disconnected (0) or disconnecting (3), we just keep it in memory
+      // The skipped saves in the logs were annoying the user, so we'll only log it once per minute if disconnected
+      if (!global._lastDbWarn || Date.now() - global._lastDbWarn > 60000) {
+        console.warn(`[SERVER] 💾 Warning: Data saved to MEMORY only. MongoDB is currently unreachable.`);
+        global._lastDbWarn = Date.now();
+      }
     }
   } catch (e) {
     console.error('[SERVER] Error saving to MongoDB:', e);
@@ -283,21 +331,54 @@ async function saveData(key, val) {
 
 
 
+// ─── SOCKET.IO SYNC ──────────────────────────────────────────
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) return next();
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'fallback-secret');
+    socket.user = decoded;
+    next();
+  } catch (e) {
+    next();
+  }
+});
+
 io.on('connection', (socket) => {
   const ip = socket.handshake.address;
-  console.log(`[SYNC] User joined: ${ip}`);
+  const user = socket.user;
+  console.log(`[SYNC] User joined: ${ip} (${user ? user.name : 'Guest'})`);
   
   // Send current state to newly connected client
   const keys = Object.keys(syncData);
   if (keys.length > 0) {
-    console.log(`[SYNC] Sending initial state (${keys.length} keys) to ${ip}`);
     keys.forEach(key => {
-      if (key === 'sq_session') return; // NEVER send remote sessions to new clients
-      socket.emit('sync', { key, val: syncData[key] });
+      if (key === 'sq_session') return;
+      let val = syncData[key];
+
+      // ROLE & COLLEGE BASED DATA ISOLATION (ENFORCED ON BACKEND)
+      if (key === 'sq_users') {
+        const isSuper = user?.isSuper === true;
+        const isAdmin = user?.role === 'admin';
+        
+        // 1. If not an admin or super admin, they get ZERO users (Security)
+        if (!isSuper && !isAdmin) return; 
+
+        // 2. If College Admin (Normal Admin), filter by their assigned college
+        if (isAdmin && !isSuper) {
+           const users = JSON.parse(val || '[]');
+           // Backend Enforced: Only users matching the admin's college are visible
+           const institutionalUsers = users.filter(u => u.college === user.college);
+           val = JSON.stringify(institutionalUsers);
+           console.log(`[SECURITY] Institution Filter: Sending ${institutionalUsers.length} users to ${user.name} (College: ${user.college})`);
+        }
+        // 3. Super Admin gets the full list (no filter)
+      }
+
+      socket.emit('sync', { key, val });
     });
   }
 
-  // Received a change from one client, broadcast to all others and save
   socket.on('sync', async (data) => {
     if (!data || !data.key) return;
     
@@ -308,14 +389,34 @@ io.on('connection', (socket) => {
     try {
       const decoded = jwt.verify(token, JWT_SECRET);
       
-      // OPTIONAL: Add granular permission logic here
-      // Example: Regular user can't edit 'sq_questions'
-      if (['sq_questions', 'sq_rounds', 'sq_settings'].includes(data.key) && decoded.role !== 'admin') {
-        return console.warn(`[SECURITY] Unauthorized sync attempt for ${data.key} by ${decoded.name}`);
+      // ADMIN-COLLEGE DATA ISOLATION FOR USERS
+      if (data.key === 'sq_users') {
+         if (!decoded.isSuper) {
+           if (decoded.role !== 'admin') {
+             return console.warn(`[SECURITY] Unauthorized: ${decoded.name} tried to sync sq_users`);
+           }
+           
+           const incomingUsers = JSON.parse(data.val || '[]');
+           const existingUsers = JSON.parse(syncData['sq_users'] || '[]');
+           
+           // BACKEND ENFORCEMENT: 
+           // 1. Keep users from other institutions untouched
+           const otherInstitutions = existingUsers.filter(u => u.college !== decoded.college);
+           
+           // 2. Only allow the admin to update/inject users belonging to their own institution
+           const myInstitutionalUpdates = incomingUsers.filter(u => u.college === decoded.college);
+           
+           // 3. Re-merge for consistent storage record
+           const merged = [...otherInstitutions, ...myInstitutionalUpdates];
+           data.val = JSON.stringify(merged);
+           
+           console.log(`[SECURITY] Isolation Check: Merged ${myInstitutionalUpdates.length} users for ${decoded.college}. Locked out ${otherInstitutions.length} foreign records.`);
+         }
       }
 
-      if (['sq_quiz', 'sq_quiz_requests'].includes(data.key) && data.key === 'sq_quiz' && decoded.role !== 'admin' && decoded.role !== 'team') {
-         // Allow teams to update quiz status if needed (e.g. they answered), but usually only admin
+      // Permissions for sensitive configuration keys
+      if (['sq_questions', 'sq_rounds', 'sq_settings'].includes(data.key) && decoded.role !== 'admin') {
+        return console.warn(`[SECURITY] Unauthorized config sync attempt: ${data.key} by ${decoded.name}`);
       }
 
       if (data.key === 'sq_session') return; 
@@ -324,15 +425,11 @@ io.on('connection', (socket) => {
       await saveData(data.key, data.val);
       socket.broadcast.emit('sync', data);
       
-      if (['sq_quiz', 'sq_rounds', 'sq_questions'].includes(data.key)) {
-        console.log(`[SYNC] Secured update: ${data.key} from ${decoded.name || ip}`);
-      }
     } catch (err) {
-      console.warn(`[SECURITY] Sync rejected: Invalid or missing token from ${ip}`);
+      console.warn(`[SECURITY] Sync rejected: Invalid session from ${ip}`);
     }
   });
 
-  
   socket.on('disconnect', () => {
     console.log(`[SYNC] User left: ${ip}`);
   });
