@@ -111,7 +111,13 @@
     </section>
 
     <section class="sec hidden" id="sec-users">
-      <div class="sec-head"><h2>USER MANAGEMENT</h2><button class="btn-sm btn-cyan" onclick="openAddUser()">+ NEW USER</button></div>
+      <div class="sec-head">
+        <h2>USER MANAGEMENT</h2>
+        <div style="display:flex; gap:8px">
+          <button id="btn-delete-multi" class="btn-sm btn-red hidden" onclick="deleteSelectedUsers()">🗑️ DELETE SELECTED</button>
+          <button class="btn-sm btn-cyan" onclick="openAddUser()">+ NEW USER</button>
+        </div>
+      </div>
       <div class="card"><div id="users-table"></div></div>
     </section>
 

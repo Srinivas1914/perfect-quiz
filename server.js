@@ -88,9 +88,9 @@ app.post('/api/register', async (req, res) => {
     users.push(newUser);
     const updatedVal = JSON.stringify(users);
 
-    // 3. Save to memory and MongoDB
+    // 3. Save to memory and MongoDB (non-blocking for faster response)
     syncData['sq_users'] = updatedVal;
-    await saveData('sq_users', updatedVal);
+    saveData('sq_users', updatedVal).catch(e => console.error('[AUTH] Background save failed:', e));
 
     // 4. Broadcast the update to all connected clients
     io.emit('sync', { key: 'sq_users', val: updatedVal });

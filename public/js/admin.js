@@ -1,4 +1,6 @@
 // ===== ADMIN JS =====
+const sessCheck = Store.getSession();
+if(!sessCheck) { window.location.href = '/index.html'; }
 requireRole('admin');
 
 let currentSec = 'dashboard';
@@ -283,11 +285,15 @@ function renderUsers(){
   const assignedIds=new Set();
   teams.forEach(t=>(t.memberIds||[]).forEach(id=>assignedIds.add(id)));
 
-  el.innerHTML=`<table class="dtable"><thead><tr><th>#</th><th>NAME</th><th>USERNAME</th><th>ROLL</th><th>ROLE</th><th>IN TEAM</th><th>REGISTERED</th><th></th></tr></thead><tbody>`+
+  el.innerHTML=`<table class="dtable" id="u-table-root"><thead><tr>
+      <th><input type="checkbox" id="user-sel-all" onclick="toggleAllUsers(this.checked)"></th>
+      <th>#</th><th>NAME</th><th>USERNAME</th><th>ROLL</th><th>ROLE</th><th>IN TEAM</th><th>REGISTERED</th><th></th></tr></thead><tbody>`+
   users.map((u,i)=>{
     const inTeam=assignedIds.has(u.id);
     const tn=inTeam?teams.find(t=>(t.memberIds||[]).includes(u.id))?.name:'';
-    return `<tr><td class="text-muted text-xs">${i+1}</td><td><strong>${u.name}</strong></td>
+    return `<tr>
+      <td><input type="checkbox" class="user-sel" value="${u.id}" onclick="updateCheckSelection()"></td>
+      <td class="text-muted text-xs">${i+1}</td><td><strong>${u.name}</strong></td>
       <td class="text-cyan font-mono text-xs">${u.username}</td><td class="text-muted text-sm">${u.roll}</td>
       <td><select class="role-select" onchange="changeUserRole('${u.id}',this.value)">
         <option value="user" ${u.role==='user'?'selected':''}>User</option>
@@ -297,6 +303,30 @@ function renderUsers(){
       <td class="text-xs text-muted">${new Date(u.registeredAt||0).toLocaleDateString('en-IN')}</td>
       <td><button class="btn-icon" onclick="openEditUser('${u.id}')">✏️</button><button class="btn-icon" onclick="deleteUser('${u.id}')">🗑️</button></td></tr>`;
   }).join('')+'</tbody></table>';
+  updateCheckSelection();
+}
+function toggleAllUsers(chk){
+  document.querySelectorAll('.user-sel').forEach(el => el.checked = chk);
+  updateCheckSelection();
+}
+function updateCheckSelection(){
+  const checked = document.querySelectorAll('.user-sel:checked');
+  const btn = document.getElementById('btn-delete-multi');
+  if(btn){
+    btn.classList.toggle('hidden', checked.length === 0);
+    btn.textContent = `🗑️ DELETE SELECTED (${checked.length})`;
+  }
+}
+function deleteSelectedUsers(){
+  const checked = [...document.querySelectorAll('.user-sel:checked')].map(el => el.value);
+  if(!checked.length) return;
+  customConfirm(`Delete <strong>${checked.length} selected users</strong>?`, '🗑️', () => {
+    const all = Store.getUsers();
+    const filtered = all.filter(u => !checked.includes(u.id));
+    Store.saveUsers(filtered);
+    toast(`${checked.length} users deleted`, 'warning');
+    renderUsers();
+  });
 }
 function openAddUser(){
   document.getElementById('um-id').value='';

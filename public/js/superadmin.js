@@ -1,7 +1,7 @@
 // ===== SUPER ADMIN JS =====
 const sessCheck = Store.getSession();
-if(!sessCheck.isSuper) {
-  window.location.href = '/admin';
+if(!sessCheck || !sessCheck.isSuper) {
+  window.location.href = sessCheck?.role === 'admin' ? '/admin' : '/index.html';
 }
 requireRole('admin');
 
