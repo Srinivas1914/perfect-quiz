@@ -327,11 +327,11 @@ function passQ(){
   const passedQs=(team.passedQs||[]); if(!passedQs.includes(quiz.globalQIdx)) passedQs.push(quiz.globalQIdx);
   Store.updateTeam(teamId,{passedQs});
 
-  const settings=Store.getSettings();
   // LIMIT: Question only goes to ONE PASS TEAM (max 2 teams total including start)
-  const passLimit = Math.min(2, teams.length);
+  const passLimit = 2; // Standard: Only 1 extra team gets a chance
   if(passChain.length >= passLimit){
     // Limit reached → participant turn
+    const settings=Store.getSettings();
     const q2={...quiz,status:'participant_turn',currentTeamIdx:-1,passChain,participantTurn:true,participantTimerStart:Date.now(),participantTimeLimit:settings.participantTimeLimit||30,_participantTimerHandled:false};
     Store.saveQuiz(q2);
     Store.addActivity(`📢 Max passes reached Q${quiz.currentQInRound+1} → PARTICIPANTS`,'warning');

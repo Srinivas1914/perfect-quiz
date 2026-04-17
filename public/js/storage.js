@@ -496,6 +496,7 @@ const RenderEngine = {
 
     if (q.status === 'idle' || q.status === 'finished') {
       container.innerHTML = '';
+      delete container.dataset.state;
       return;
     }
 
@@ -506,12 +507,17 @@ const RenderEngine = {
     const roundQs = questions.filter(qs => qs.roundId == curRound.id).sort((a,b)=>a.id-b.id);
     const totalInRound = roundQs.length || curRound.questionCount || 0;
 
+    // PREVENT BLINK: Check if state actually changed
+    const newState = `${q.status}|${q.currentRoundIdx}|${q.currentQInRound}|${q.participantTurn}|${totalInRound}`;
+    if (container.dataset.state === newState) return;
+    container.dataset.state = newState;
+
     let html = `
       <div class="quiz-map-wrap">
         <div class="qm-top">
           <div class="qm-stage-info">
-            <span class="badge badge-purple">${curRound.stage ? curRound.stage.toUpperCase() : 'ROUND'} STAGE</span>
-            <span class="text-xs font-title text-muted" style="margin-left:8px">ROUND ${curRound.num}: ${curRound.name.toUpperCase()}</span>
+            <span class="badge badge-purple">${(curRound.stage || 'ROUND').toUpperCase()} STAGE</span>
+            <span class="text-xs font-title text-muted" style="margin-left:8px">ROUND ${curRound.num}: ${(curRound.name || '').toUpperCase()}</span>
           </div>
           <div class="text-xs text-muted font-title">QUESTION <strong>${q.currentQInRound + 1}</strong> / ${totalInRound}</div>
         </div>
@@ -523,7 +529,10 @@ const RenderEngine = {
        if (i < q.currentQInRound) state = 'done';
        else if (i === q.currentQInRound) state = (q.participantTurn ? 'participant' : 'current');
        
-       html += `<div class="qm-bulb ${state}">${i+1}</div>`;
+       html += `<div class="qm-bulb-wrap">
+         <div class="qm-bulb ${state}">${i+1}</div>
+         ${i < totalInRound - 1 ? `<div class="qm-line ${i < q.currentQInRound ? 'done' : ''}"></div>` : ''}
+       </div>`;
     }
 
     html += `
