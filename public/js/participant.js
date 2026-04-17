@@ -379,14 +379,18 @@ function checkTeamAllocation(){
   const msg = document.getElementById('ph-team-msg');
   const ldr = document.getElementById('ph-team-leader-msg');
 
-  if(myTeam && el && msg){
-    el.classList.remove('hidden');
-    msg.innerHTML = `You have been allotted to <strong>${myTeam.name}</strong>`;
-    if(ldr){
-      const leader = Store.getUserById(myTeam.leaderId);
-      ldr.textContent = `Team Leader: ${leader ? leader.name : 'System Assigned'}`;
-      if(myTeam.leaderId === userId){
-        ldr.innerHTML = `<span class="badge badge-gold" style="font-size:10px">⭐ YOU ARE THE TEAM LEADER</span>`;
+  if(myTeam){
+    if(el && msg){
+      el.classList.remove('hidden');
+      el.style.border = '2px solid var(--gold)';
+      el.style.background = 'rgba(255,215,0,0.05)';
+      msg.innerHTML = `<div class="font-title text-gold" style="font-size:16px;margin-bottom:5px">📢 YOU ARE IN A TEAM!</div>You have been allotted to <strong>${myTeam.name}</strong> (Team No: ${myTeam.teamNumber})`;
+      if(ldr){
+        const leader = Store.getUsers().find(u => u.id === myTeam.leaderId);
+        ldr.innerHTML = `<div class="mt-2 pt-2 border-t" style="border-color:rgba(255,215,0,0.2)">
+          <span class="badge badge-gold" style="font-size:10px">${myTeam.leaderId === userId ? '⭐ YOU ARE THE LEADER' : `Leader: ${leader ? leader.name : 'System Assigned'}`}</span>
+          <button class="btn-sm btn-gold ml-2" onclick="window.location.href='/team/${encodeURIComponent(myTeam.name)}'" style="font-size:9px;padding:3px 10px">GO TO TEAM PAGE</button>
+        </div>`;
       }
     }
   } else if(el){

@@ -78,6 +78,7 @@ function renderDashboard(){
     }
   }
 
+  const ps = Store.getParticipants();
   document.getElementById('kpi-row').innerHTML=`
     <div class="kpi cyan"><div class="kpi-val">${users.length}</div><div class="kpi-lbl">USERS</div></div>
     <div class="kpi green"><div class="kpi-val">${users.filter(u=>u.role==='participant').length}</div><div class="kpi-lbl">PARTICIPANTS</div></div>
@@ -102,8 +103,9 @@ function renderDashboard(){
   // Team login status board
   const loginBoardEl=document.getElementById('d-login-status');
   if(loginBoardEl){
+    const lState = Store.getLoginStatus();
     loginBoardEl.innerHTML=aTeams.length?aTeams.map(t=>{
-      const s=loginStatus[t.id]||{};
+      const s=lState[t.id]||{};
       return `<div class="login-chip ${s.loggedIn?'chip-on':'chip-off'}">
         <span class="chip-dot"></span>
         <span class="chip-name">T${t.teamNumber||'?'}: ${t.name}</span>
@@ -554,9 +556,12 @@ function generateAutoTeams(){
 
   if(!eligible.length){ err.textContent = 'No participants found matching these filters.'; return; }
 
-  // Target online users first if possible, or just shuffle all eligible
-  const online = eligible.filter(u => loginStatus[u.id]?.status === 'online').sort(()=>Math.random()-0.5);
-  const offline = eligible.filter(u => loginStatus[u.id]?.status !== 'online').sort(()=>Math.random()-0.5);
+  // Target online users first if possible using Login History
+  const history = Store.getLoginHistory();
+  const activeIds = new Set(history.filter(h => !h.logoutTime).map(h => h.name)); // name is used in history
+
+  const online = eligible.filter(u => activeIds.has(u.name)).sort(()=>Math.random()-0.5);
+  const offline = eligible.filter(u => !activeIds.has(u.name)).sort(()=>Math.random()-0.5);
   const finalPool = [...online, ...offline];
 
   let teamsToCreate = [];
@@ -575,16 +580,18 @@ function generateAutoTeams(){
     const quizId = Store.getSession().quizId || 'GLOBAL';
     const currentTeams = Store.getTeams();
     const newTeams = [];
+    const ts = Date.now();
 
     teamsToCreate.forEach((mems, i) => {
       if(!mems.length) return;
       const leader = mems[0]; // First one is leader
       const teamId = genId();
+      const tNum = currentTeams.length + i + 1;
       newTeams.push({
         id: teamId,
-        name: `Team ${currentTeams.length + i + 1}`,
-        teamNumber: currentTeams.length + i + 1,
-        username: `team${currentTeams.length + i + 1}_${quizId.toLowerCase()}`,
+        name: `Team ${tNum}`,
+        teamNumber: tNum,
+        username: `team${tNum}_${quizId.toLowerCase()}`,
         password: Math.random().toString(36).substr(2, 6), // Generate random password
         quizId: quizId,
         memberIds: mems.map(m => m.id),
@@ -594,10 +601,11 @@ function generateAutoTeams(){
         correctCount: 0,
         answers: {},
         roundScores: {},
-        passedQs: []
+        passedQs: [],
+        createdAt: ts
       });
 
-      Store.addActivity(`Auto-Team: <strong>Team ${currentTeams.length + i + 1}</strong> created (${mems.length} members). Leader: ${leader.name}`, 'success');
+      Store.addActivity(`Auto-Team: <strong>Team ${tNum}</strong> created (${mems.length} members). Leader: ${leader.name}`, 'success');
     });
 
     Store.saveTeams([...currentTeams, ...newTeams]);
@@ -1331,12 +1339,14 @@ let currentReportData = null;
 async function generateReport(type) {
   const teams = Store.getActiveTeams();
   const rounds = Store.getRounds();
+  const questions = Store.getQuestions();
+  const participants = Store.getParticipants();
   const quiz = Store.getQuiz();
   const reportView = document.getElementById('report-view');
   const badge = document.getElementById('report-type-badge');
   const actions = document.getElementById('report-actions');
 
-  if (!teams.length) {
+  if (!teams.length && type !== 'individual') {
     reportView.innerHTML = '<div class="text-center text-muted py-5">No active teams found to generate report.</div>';
     return;
   }
@@ -1354,7 +1364,16 @@ async function generateReport(type) {
         correctCount: t.correctCount,
         roundScores: t.roundScores || {}
       })),
-      rounds: rounds.map(r => ({ name: r.name, num: r.roundNumber })),
+      rounds: rounds.map(r => ({ id: r.id, name: r.name, num: r.roundNumber })),
+      participants: participants.map(p => ({
+        id: p.id,
+        name: p.name,
+        roll: p.roll,
+        score: p.score,
+        correctCount: p.correctCount,
+        answers: p.answers || {}
+      })),
+      questionCount: questions.length,
       quizStatus: quiz.status
     }
   };
@@ -1500,33 +1519,31 @@ function viewSavedReport(report) {
   // Set as current for download
   currentReportData = report;
   
-  if (report.type === 'detailed') {
+  if (report.type === 'detailed' || report.type === 'individual') {
     let html = `<div class="text-xs text-muted mb-4">Saved on ${new Date(report.timestamp).toLocaleString()}</div>
     <div style="overflow-x:auto">
       <table class="full-w text-sm report-grid">
         <thead>
           <tr>
-            <th>ROLL NUMBER</th>
-            <th>NAME</th>
-            ${Array.from({length: qCount}, (_, i) => `<th>Q${i+1}</th>`).join('')}
+            <th>ROLL/NAME</th>
+            ${Array.from({length: qCount || 20}, (_, i) => `<th>Q${i+1}</th>`).join('')}
             <th>TOTAL</th>
           </tr>
         </thead>
         <tbody>`;
     
-    participants.forEach(p => {
+    (participants || []).forEach(p => {
       let total = 0;
       const ans = p.answers || {};
       html += `<tr>
-        <td class="font-mono"><strong>${p.roll}</strong></td>
-        <td>${p.name}</td>
-        ${Array.from({length: qCount}, (_, i) => {
+        <td><strong>${p.roll || '—'}</strong><br><small>${p.name}</small></td>
+        ${Array.from({length: qCount || 20}, (_, i) => {
           const res = ans[i];
-          const isOk = res && res.ok;
+          const isOk = res && (res.ok || Array.isArray(res)); // Logic varies, but usually presence means attempted
           if(isOk) total++;
-          return `<td>${res ? (isOk ? '<span class="text-green">1</span>' : '<span class="text-red">0</span>') : '—'}</td>`;
+          return `<td>${res ? (isOk ? '<span class="text-green">✓</span>' : '<span class="text-red">✗</span>') : '—'}</td>`;
         }).join('')}
-        <td><strong class="text-gold">${total}</strong></td>
+        <td><strong class="text-gold">${p.correctCount || total}</strong></td>
       </tr>`;
     });
     html += `</tbody></table></div>`;
