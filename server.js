@@ -5,6 +5,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 const jwt = require('jsonwebtoken');
 
 const app = express();
@@ -14,14 +15,23 @@ const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-
 // Serve built assets from 'dist' directory in production, otherwise serve root
 const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
-const staticDir = isProduction ? path.join(__dirname, 'dist') : __dirname;
+let staticDir = isProduction ? path.join(__dirname, 'dist') : __dirname;
+
+// Fallback logic if build failed or dist is missing
+if (isProduction && !fs.existsSync(staticDir)) {
+  console.warn(`[SERVER] ⚠️ WARNING: 'dist' directory not found at ${staticDir}. Falling back to root directory.`);
+  staticDir = __dirname;
+}
+
 console.log(`[SERVER] Environment: ${isProduction ? 'PRODUCTION' : 'DEVELOPMENT'}`);
-console.log(`[SERVER] Serving static files from: ${staticDir}`);
+console.log(`[SERVER] Static Directory: ${staticDir}`);
 
 app.use(express.static(staticDir));
+if (isProduction && fs.existsSync(path.join(__dirname, 'public'))) {
+    app.use(express.static(path.join(__dirname, 'public')));
+}
 if (!isProduction) {
   app.use(express.static(path.join(__dirname, 'public')));
 }
