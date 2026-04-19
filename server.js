@@ -552,51 +552,14 @@ io.on('connection', (socket) => {
       const decoded = jwt.verify(token, JWT_SECRET);
       
       // ADMIN-COLLEGE DATA ISOLATION FOR USERS
+      // ─── USER LIST SYNC (SUPERADMIN ONLY) ───
       if (data.key === 'sq_users') {
-         const incomingUsers = JSON.parse(data.val || '[]');
-         const existingUsers = JSON.parse(syncData['sq_users'] || '[]');
-
-         if (!decoded.isSuper) {
-           // IF not admin, they can ONLY update THEIR OWN record (Security)
-           if (decoded.role !== 'admin') {
-             const myId = decoded.userId || decoded.id;
-             if (!myId) return console.warn(`[SECURITY] Rejected: User ${decoded.name} has no ID to verify own sync.`);
-             
-             // Find my record in incoming data
-             const myUpdate = incomingUsers.find(u => u.id === myId);
-             if (!myUpdate) return console.warn(`[SECURITY] Rejected: ${decoded.name} tried to sync sq_users without their own record.`);
-             
-             // Merge my update into existing list
-             const updated = existingUsers.map(u => u.id === myId ? { ...u, ...myUpdate } : u);
-             // If I wasn't in existing (unlikely if registered), add me
-             if (!existingUsers.find(u => u.id === myId)) updated.push(myUpdate);
-             
-             data.val = JSON.stringify(updated);
-             console.log(`[SECURITY] Personal Sync: ${decoded.name} updated their own profile.`);
-           } else {
-             // Admin-College Isolation logic
-             const adminInst = (decoded.college || '').trim().toLowerCase();
-             
-             // 1. Keep users from other institutions untouched (Safety Lock)
-             const otherInstitutions = existingUsers.filter(u => {
-               const uInst = (u.college || '').trim().toLowerCase();
-               return uInst !== adminInst;
-             });
-             
-             // 2. Process updates for this admin's institution
-             const myInstitutionalUpdates = incomingUsers.filter(u => {
-               const uInst = (u.college || '').trim().toLowerCase();
-               return uInst === adminInst || !uInst;
-             }).map(u => {
-               return { ...u, college: decoded.college };
-             });
-             
-             // 3. Re-merge
-             const merged = [...otherInstitutions, ...myInstitutionalUpdates];
-             data.val = JSON.stringify(merged);
-             console.log(`[SECURITY] Isolation Sync: ${myInstitutionalUpdates.length} users updated for ${decoded.college}.`);
-           }
-         }
+          if (!decoded.isSuper) {
+             console.warn(`[SECURITY] Rejected: ${decoded.name} (${decoded.role}) tried to sync full sq_users list. Access Denied.`);
+             return; 
+          }
+          // Superadmin can overwrite the whole list
+          console.log(`[SYNC] Superadmin ${decoded.name} updated global user list.`);
       }
 
       // Permissions for sensitive configuration keys

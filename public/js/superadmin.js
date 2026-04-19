@@ -227,7 +227,12 @@ function renderUsers(){
   teams.forEach(t=>(t.memberIds||[]).forEach(id=>assignedIds.add(id)));
 
   el.innerHTML=`<table class="dtable" id="u-table-root"><thead><tr>
-      <th><input type="checkbox" id="user-sel-all" onclick="toggleAllUsers(this.checked)"></th>
+      <th style="width:280px">
+        <div style="display:flex; gap:5px">
+          <input type="checkbox" id="user-sel-all" onclick="toggleAllUsers(this.checked)">
+          <button class="btn-xs btn-gold" onclick="repairUsers()" title="Recovery missing admin accounts from requests">🛠️ REPAIR</button>
+        </div>
+      </th>
       <th>#</th><th>NAME</th><th>USERNAME</th><th>ROLL</th><th>ROLE</th><th>IN TEAM</th><th>REGISTERED</th><th></th></tr></thead><tbody>`+
   users.map((u,i)=>{
     const inTeam=assignedIds.has(u.id);
@@ -246,6 +251,43 @@ function renderUsers(){
       <td><button class="btn-icon" onclick="openEditUser('${u.id}')">✏️</button><button class="btn-icon" onclick="deleteUser('${u.id}')">🗑️</button></td></tr>`;
   }).join('')+'</tbody></table>';
   updateCheckSelection();
+}
+
+function repairUsers(){
+  const users = Store.getUsers();
+  const managed = Store.getManagedQuizzes();
+  const reqs = Store.getQuizRequests();
+  let count = 0;
+  
+  managed.forEach(m => {
+    // Check if admin exists
+    if(!users.find(u => u.id === m.adminId)){
+      // Try to find request to get password
+      const r = reqs.find(req => req.username === m.username || (req.collegeName === m.collegeName && req.collegeCode === m.collegeCode));
+      if(r){
+        users.push({
+          id: m.adminId,
+          name: m.collegeName + ' Admin',
+          roll: m.collegeCode,
+          college: m.collegeName,
+          username: r.username,
+          password: r.password,
+          role: 'admin',
+          currentQuizId: m.quizId,
+          registeredAt: r.timestamp || Date.now()
+        });
+        count++;
+      }
+    }
+  });
+  
+  if(count > 0){
+    Store.saveUsers(users);
+    toast(`Successfully reconstructed ${count} missing admin accounts!`, 'success');
+    renderUsers();
+  } else {
+    toast('No missing accounts detected.', 'info');
+  }
 }
 
 function toggleAllUsers(chk){
