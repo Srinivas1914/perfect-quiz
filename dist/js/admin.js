@@ -1,17 +1,25 @@
-// ===== SUPER ADMIN JS =====
+// ===== ADMIN JS =====
+// Rehydration check: wait for storage to be ready
 (function initAuth() {
   const sess = Store.getSession();
-  if(!sess) {
+  if(!sess) { 
+    // If we have a token but no session, we might be rehydrating from a refresh
     const token = Store.getToken();
-    if (!token) { window.location.href = '/index.html'; return; }
-  } else if (!sess.isSuper) {
-    window.location.href = sess.role === 'admin' ? '/admin' : '/index.html';
+    if (token) {
+       console.log('[AUTH] Rehydrating session...');
+       // We can continue, initAdminInfo will handle the rest
+    } else {
+       window.location.href = '/index.html'; 
+       return;
+    }
+  }
+  if (sess && sess.role !== 'admin') {
+    window.location.href = '/index.html';
     return;
   }
 })();
 
-let aiQuestions = []; // Ensure global exists
-
+let aiGeneratedResults = []; // Ensure global exists
 
 let currentSec = 'dashboard';
 let adminTimerIv = null;
@@ -33,101 +41,180 @@ function renderSec(id){
   if(id==='teams')      renderTeams();
   if(id==='rounds')     renderRounds();
   if(id==='questions')  renderQuestions();
-  if(id==='control')    { renderControl(); renderCommandTargets(); }
+  if(id==='control')    renderControl();
   if(id==='camera')     renderCamera();
-
   if(id==='activity')   renderActivity();
+  if(id==='reports')    loadSavedReports();
   if(id==='settings')   loadSettings();
-  if(id==='quiz-requests') renderRequests();
-  if(id==='managed-admins') renderManaged();
-  if(id==='admin-perf')     renderAdminPerf();
-  if(id==='reports')        renderReports();
 }
-
 
 // ─── CLOCK ────────────────────────────────────────────────────
 setInterval(()=>{ const el=document.getElementById('sb-clock'); if(el) el.textContent=new Date().toLocaleTimeString('en-IN'); },1000);
 
+// ─── INIT ─────────────────────────────────────────────────────
+function initAdminInfo(){
+  const sess = Store.getSession();
+  const managed = Store.getManagedQuizzes();
+  const q = managed.find(x => x.quizId === sess.quizId);
+  const quizIdEl = document.getElementById('atb-quiz-id-val');
+  const sbQuizIdEl = document.getElementById('sb-quiz-id');
+  
+  if(q){
+    document.getElementById('atb-college-name').textContent = q.collegeName || "ADMIN DASHBOARD";
+    document.getElementById('atb-college-code').textContent = q.collegeCode || "QUIZ";
+    if(quizIdEl) quizIdEl.textContent = q.quizId;
+    if(sbQuizIdEl){
+      sbQuizIdEl.textContent = `QUIZ ID: ${q.quizId}`;
+      sbQuizIdEl.style.display = 'block';
+    }
+  } else if (sess.isSuper) {
+    if(quizIdEl) quizIdEl.textContent = "GLOBAL (SUPER)";
+    document.getElementById('atb-college-name').textContent = "SUPER ADMIN DASHBOARD";
+    document.getElementById('atb-college-code').textContent = "SYSTEM";
+    if(sbQuizIdEl){
+      sbQuizIdEl.textContent = "GLOBAL (SUPER)";
+      sbQuizIdEl.style.display = 'block';
+    }
+  } else if (sess.quizId) {
+    if(quizIdEl) quizIdEl.textContent = sess.quizId;
+    document.getElementById('atb-college-name').textContent = "ADMIN DASHBOARD";
+    document.getElementById('atb-college-code').textContent = "QUIZ";
+    if(sbQuizIdEl){
+      sbQuizIdEl.textContent = `QUIZ ID: ${sess.quizId}`;
+      sbQuizIdEl.style.display = 'block';
+    }
+  }
+  
+  document.getElementById('atb-admin-name').textContent = sess.name || (sess.isSuper ? 'Super Admin' : 'Admin');
+  if(sess.userId) {
+    document.getElementById('atb-admin-id').textContent = `(ID: ${sess.userId})`;
+  } else if (sess.isSuper) {
+    document.getElementById('atb-admin-id').textContent = "(ID: root)";
+  }
+}
+initAdminInfo();
+
 // ─── DASHBOARD ────────────────────────────────────────────────
 function renderDashboard(){
-  try {
-    const users=Store.getUsers(), teams=Store.getTeams(), aTeams=Store.getActiveTeams(),
-          questions=Store.getQuestions(), rounds=Store.getRounds(), quiz=Store.getQuiz(),
-          loginStatus=Store.getLoginStatus();
+  const sess = Store.getSession();
+  let users=Store.getUsers();
+  const teams=Store.getTeams(), aTeams=Store.getActiveTeams(),
+        questions=Store.getQuestions(), rounds=Store.getRounds(), quiz=Store.getQuiz();
 
-    const kpiEl = document.getElementById('kpi-row');
-    if(kpiEl) {
-      kpiEl.innerHTML=`
-        <div class="kpi cyan clickable" onclick="goSection('users')">
-          <span class="kpi-click-hint">↗ click</span>
-          <div class="kpi-val">${users.length}</div>
-          <div class="kpi-lbl">USERS</div>
-        </div>
-        <div class="kpi green clickable" onclick="goSection('users')">
-          <span class="kpi-click-hint">↗ click</span>
-          <div class="kpi-val">${users.filter(u=>u.role==='participant').length}</div>
-          <div class="kpi-lbl">PARTICIPANTS</div>
-        </div>
-        <div class="kpi gold clickable" onclick="goSection('teams')">
-          <span class="kpi-click-hint">↗ click</span>
-          <div class="kpi-val">${aTeams.length}</div>
-          <div class="kpi-lbl">ACTIVE TEAMS</div>
-        </div>
-        <div class="kpi purple clickable" onclick="goSection('rounds')">
-          <span class="kpi-click-hint">↗ click</span>
-          <div class="kpi-val">${rounds.length}</div>
-          <div class="kpi-lbl">ROUNDS</div>
-        </div>
-        <div class="kpi red clickable" onclick="goSection('questions')">
-          <span class="kpi-click-hint">↗ click</span>
-          <div class="kpi-val">${questions.length}</div>
-          <div class="kpi-lbl">QUESTIONS</div>
-        </div>`;
+  // Strict filtering for normal admins: only show users who have joined THIS specific quiz
+  if (!sess.isSuper) {
+    if (sess.quizId) {
+      users = users.filter(u => u.currentQuizId === sess.quizId);
+    } else {
+      users = []; // Admin has no quiz ID, show nothing
     }
-
-    // Quiz status
-    const badgeEl = document.getElementById('d-status-badge');
-    if(badgeEl) {
-      const sColor={idle:'gray',round_intro:'cyan',running:'green',paused:'gold',participant_turn:'purple',round_end:'purple',finished:'cyan'};
-      const sLabel={idle:'IDLE',round_intro:`R${quiz.currentRoundIdx+1} INTRO`,running:`R${quiz.currentRoundIdx+1} RUNNING`,paused:'PAUSED',participant_turn:'PARTICIPANTS ANSWERING',round_end:`R${quiz.currentRoundIdx+1} ENDED`,finished:'FINISHED'};
-      badgeEl.innerHTML=`<span class="badge badge-${sColor[quiz.status]||'gray'}">${sLabel[quiz.status]||quiz.status.toUpperCase()}</span>`;
-    }
-
-    const infoEl = document.getElementById('d-quiz-info');
-    if(infoEl) {
-      const curQ=Store.getQuestions()[quiz.globalQIdx];
-      infoEl.innerHTML=[
-        ['Rounds', rounds.length],
-        ['Questions', `${questions.length} / ${getTotalConfiguredQs(rounds)} slots`],
-        ['Current Round', quiz.status==='idle'?'—':`Round ${quiz.currentRoundIdx+1}: ${rounds[quiz.currentRoundIdx]?.name||''}`],
-        ['Current Q', quiz.status==='running'||quiz.status==='participant_turn'?`Q${quiz.currentQInRound+1}: ${(curQ?.text||'').slice(0,60)+'…'}`:'—'],
-        ['Active Teams', aTeams.length],
-      ].map(([k,v])=>`<div class="info-row"><span class="text-muted">${k}</span><span>${v}</span></div>`).join('');
-    }
-
-    // Team login status board
-    const loginBoardEl=document.getElementById('d-login-status');
-    if(loginBoardEl){
-      loginBoardEl.innerHTML=aTeams.length?aTeams.map(t=>{
-        const s=loginStatus[t.id]||{};
-        return `<div class="login-chip ${s.loggedIn?'chip-on':'chip-off'}">
-          <span class="chip-dot"></span>
-          <span class="chip-name">T${t.teamNumber||'?'}: ${t.name}</span>
-          <span class="chip-status">${s.loggedIn?'ONLINE':'OFFLINE'}</span>
-        </div>`;
-      }).join(''):'<span class="text-muted text-sm">No active teams</span>';
-    }
-
-    renderScoreboard('d-scores');
-    renderTeamActivityGrid();
-    renderRecentActivity();
-    renderFeedback();
-    renderSpeedWinners();
-    renderLoginRecords();
-    renderAlertsBadge();
-  } catch (e) {
-    console.error("[DASHBOARD] Render error:", e);
   }
+
+  const ps = Store.getParticipants();
+  document.getElementById('kpi-row').innerHTML=`
+    <div class="kpi cyan" onclick="goSection('users')">
+      <span class="kpi-click-hint">↗ click</span>
+      <div class="kpi-val">${users.length}</div>
+      <div class="kpi-lbl">USERS</div>
+    </div>
+    <div class="kpi green" onclick="goSection('users')">
+      <span class="kpi-click-hint">↗ click</span>
+      <div class="kpi-val">${users.filter(u=>u.role==='participant').length}</div>
+      <div class="kpi-lbl">PARTICIPANTS</div>
+    </div>
+    <div class="kpi gold" onclick="goSection('teams')">
+      <span class="kpi-click-hint">↗ click</span>
+      <div class="kpi-val">${aTeams.length}</div>
+      <div class="kpi-lbl">ACTIVE TEAMS</div>
+    </div>
+    <div class="kpi purple" onclick="goSection('rounds')">
+      <span class="kpi-click-hint">↗ click</span>
+      <div class="kpi-val">${rounds.length}</div>
+      <div class="kpi-lbl">ROUNDS</div>
+    </div>
+    <div class="kpi red" onclick="goSection('questions')">
+      <span class="kpi-click-hint">↗ click</span>
+      <div class="kpi-val">${questions.length}</div>
+      <div class="kpi-lbl">QUESTIONS</div>
+    </div>`;
+
+
+
+  // Quiz status
+  const sColor={idle:'gray',round_intro:'cyan',running:'green',paused:'gold',participant_turn:'purple',round_end:'purple',finished:'cyan'};
+  const sLabel={idle:'IDLE',round_intro:`R${quiz.currentRoundIdx+1} INTRO`,running:`R${quiz.currentRoundIdx+1} RUNNING`,paused:'PAUSED',participant_turn:'PARTICIPANTS ANSWERING',round_end:`R${quiz.currentRoundIdx+1} ENDED`,finished:'FINISHED'};
+  document.getElementById('d-status-badge').innerHTML=`<span class="badge badge-${sColor[quiz.status]||'gray'}">${sLabel[quiz.status]||quiz.status.toUpperCase()}</span>`;
+
+  const curQ=Store.getQuestions()[quiz.globalQIdx];
+  document.getElementById('d-quiz-info').innerHTML=[
+    ['Rounds', rounds.length],
+    ['Questions', `${questions.length} / ${getTotalConfiguredQs(rounds)} slots`],
+    ['Current Round', quiz.status==='idle'?'—':`Round ${quiz.currentRoundIdx+1}: ${rounds[quiz.currentRoundIdx]?.name||''}`],
+    ['Current Q', quiz.status==='running'||quiz.status==='participant_turn'?`Q${quiz.currentQInRound+1}: ${(curQ?.text||'').slice(0,60)+'…'}`:'—'],
+    ['Active Teams', aTeams.length],
+  ].map(([k,v])=>`<div class="info-row"><span class="text-muted">${k}</span><span>${v}</span></div>`).join('');
+
+  // Team login status board
+  const loginBoardEl=document.getElementById('d-login-status');
+  if(loginBoardEl){
+    const lState = Store.getLoginStatus();
+    loginBoardEl.innerHTML=aTeams.length?aTeams.map(t=>{
+      const s=lState[t.id]||{};
+      return `<div class="login-chip ${s.loggedIn?'chip-on':'chip-off'}">
+        <span class="chip-dot"></span>
+        <span class="chip-name">T${t.teamNumber||'?'}: ${t.name}</span>
+        <span class="chip-status">${s.loggedIn?'ONLINE':'OFFLINE'}</span>
+      </div>`;
+    }).join(''):'<span class="text-muted text-sm">No active teams</span>';
+  }
+
+  renderScoreboard('d-scores');
+  renderTeamActivityGrid();
+  renderRecentActivity();
+  renderFeedback();
+  renderSpeedWinners();
+  renderLoginRecords();
+  renderAlertsBadge();
+  renderPerformanceSummary();
+  renderTopPerformers();
+}
+
+function renderPerformanceSummary(){
+  const ps = Store.getParticipants();
+  const el = document.getElementById('d-perform-summary');
+  if(!el) return;
+  if(!ps.length){ el.innerHTML = '<div class="text-muted text-xs">No data.</div>'; return; }
+  
+  let totalCorrect = 0, totalAns = 0;
+  ps.forEach(p => {
+    Object.values(p.answers||{}).forEach(a => { totalAns++; if(a.ok) totalCorrect++; });
+  });
+  const avg = totalAns ? ((totalCorrect / totalAns) * 100).toFixed(1) : 0;
+
+  el.innerHTML = `
+    <div class="info-row"><span>Total Participants</span><span class="badge badge-cyan">${ps.length}</span></div>
+    <div class="info-row"><span>Average Accuracy</span><span class="text-green font-title">${avg}%</span></div>
+    <div class="info-row"><span>Questions Attempted</span><span>${totalAns}</span></div>
+  `;
+}
+
+function renderTopPerformers(){
+  const el = document.getElementById('d-top-performers');
+  if(!el) return;
+  const ps = Store.getParticipants();
+  const top = [...ps].sort((a,b) => {
+    const sA = Object.values(a.answers||{}).filter(x=>x.ok).length;
+    const sB = Object.values(b.answers||{}).filter(x=>x.ok).length;
+    return sB - sA;
+  }).slice(0, 5);
+
+  el.innerHTML = top.length ? `<table class="dtable">
+    <thead><tr><th>RANK</th><th>NAME</th><th>SCORE</th></tr></thead>
+    <tbody>${top.map((p,i)=>{
+      const score = Object.values(p.answers||{}).filter(x=>x.ok).length;
+      return `<tr><td class="font-title text-xs">#${i+1}</td><td>${p.name}</td><td class="font-title text-green">${score}</td></tr>`;
+    }).join('')}</tbody>
+  </table>` : '<div class="empty-state">No performance data yet</div>';
 }
 
 function renderTeamActivityGrid(){
@@ -154,7 +241,11 @@ function renderTeamActivityGrid(){
 
 function renderRecentActivity(){
   const el=document.getElementById('d-activity');
-  const list=Store.getActivity();
+  let list=Store.getActivity();
+  
+  // Normal admins CANNOT see super admin activities
+  list = list.filter(a => !a.isSuper);
+
   if(!el) return;
   el.innerHTML=list.length?list.slice(0, 15).map(a=>`<div class="act-row"><div class="act-dot" style="background:${a.type==='error'?'var(--red)':a.type==='success'?'var(--green)':'var(--cyan)'}"></div><div class="act-time">${a.time}</div><div class="act-text">${a.text}</div></div>`).join(''):'<div class="empty-state">No recent activity</div>';
 }
@@ -190,8 +281,22 @@ function renderSpeedWinners(){
 }
 
 function renderLoginRecords(){
-  const el = document.getElementById('d-login-records'), list = Store.getLoginHistory();
+  const sess = Store.getSession();
+  const el = document.getElementById('d-login-records');
+  let list = Store.getLoginHistory();
   if(!el) return;
+
+  // Normal admins only see history of their own users
+  if (!sess.isSuper) {
+    if (sess.quizId) {
+      const myUserNames = Store.getUsers().filter(u => u.currentQuizId === sess.quizId).map(u => u.name);
+      const myTeamNames = Store.getTeams().map(t => t.name);
+      list = list.filter(r => myUserNames.includes(r.name) || myTeamNames.includes(r.name) || r.name === sess.name);
+    } else {
+      list = [];
+    }
+  }
+
   el.innerHTML = list.length ? `<table class="dtable">
     <thead><tr><th>USER</th><th>ROLE</th><th>LOGIN</th><th>LOGOUT</th><th>DURATION</th></tr></thead>
     <tbody>${list.map(r=>{
@@ -211,16 +316,29 @@ function renderAlertsBadge(){
   const alerts=Store.getAlerts().filter(a=>!a.dismissed);
   const badge=document.getElementById('cam-alert-badge');
   if(badge){ badge.textContent=alerts.length; badge.classList.toggle('hidden',!alerts.length); }
-  
-  const reqs = Store.getQuizRequests().filter(r=>r.status==='pending');
-  const rbadge = document.getElementById('req-alert-badge');
-  if(rbadge){ rbadge.textContent=reqs.length; rbadge.classList.toggle('hidden', !reqs.length); }
 }
 
 // ─── USERS ────────────────────────────────────────────────────
 function renderUsers(){
-  const users=Store.getUsers();
+  const sess = Store.getSession();
+  let users=Store.getUsers();
   const teams=Store.getTeams();
+  
+  // Normal admins ONLY see their own quiz participants
+  // Normal admins see ALL users from their college, plus anyone who joined their specific quiz
+  if (!sess.isSuper) {
+    const adminCollege = (sess.college || '').trim().toLowerCase();
+    users = users.filter(u => {
+      const uCollege = (u.college || '').trim().toLowerCase();
+      const matchCollege = uCollege && adminCollege && uCollege === adminCollege;
+      const matchQuiz = sess.quizId && u.currentQuizId === sess.quizId;
+      return matchCollege || matchQuiz;
+    });
+  }
+  
+  // Normal admins CANNOT see or manage other admins
+  users = users.filter(u => u.role !== 'admin');
+
   const el=document.getElementById('users-table');
   if(!users.length){ el.innerHTML='<div class="empty-state">No registered users yet.</div>'; return; }
   const assignedIds=new Set();
@@ -239,7 +357,6 @@ function renderUsers(){
       <td><select class="role-select" onchange="changeUserRole('${u.id}',this.value)">
         <option value="user" ${u.role==='user'?'selected':''}>User</option>
         <option value="participant" ${u.role==='participant'?'selected':''}>Participant</option>
-        <option value="admin" ${u.role==='admin'?'selected':''}>Admin</option>
       </select></td>
       <td>${inTeam?`<span class="badge badge-green">${tn}</span>`:'—'}</td>
       <td class="text-xs text-muted">${new Date(u.registeredAt||0).toLocaleDateString('en-IN')}</td>
@@ -247,12 +364,10 @@ function renderUsers(){
   }).join('')+'</tbody></table>';
   updateCheckSelection();
 }
-
 function toggleAllUsers(chk){
   document.querySelectorAll('.user-sel').forEach(el => el.checked = chk);
   updateCheckSelection();
 }
-
 function updateCheckSelection(){
   const checked = document.querySelectorAll('.user-sel:checked');
   const btn = document.getElementById('btn-delete-multi');
@@ -261,7 +376,6 @@ function updateCheckSelection(){
     btn.textContent = `🗑️ DELETE SELECTED (${checked.length})`;
   }
 }
-
 function deleteSelectedUsers(){
   const checked = [...document.querySelectorAll('.user-sel:checked')].map(el => el.value);
   if(!checked.length) return;
@@ -273,12 +387,6 @@ function deleteSelectedUsers(){
     renderUsers();
   });
 }
-function toggleAdminFields(){
-  const role = document.getElementById('um-role').value;
-  const adminBox = document.getElementById('um-admin-fields');
-  if(adminBox) adminBox.classList.toggle('hidden', role !== 'admin');
-}
-
 function openAddUser(){
   document.getElementById('um-id').value='';
   document.getElementById('um-name').value='';
@@ -286,21 +394,17 @@ function openAddUser(){
   document.getElementById('um-user').value='';
   document.getElementById('um-pass').value='';
   document.getElementById('um-role').value='user';
-  
   document.getElementById('um-college').value='';
   document.getElementById('um-dept').value='';
   document.getElementById('um-year').value='1';
-  
   document.getElementById('um-err').textContent='';
   document.getElementById('user-modal-title').textContent='CREATE USER';
   
   const optAdmin = document.querySelector('#um-role option[value="admin"]');
-  if(optAdmin) optAdmin.style.display = 'block';
+  if(optAdmin) optAdmin.style.display = 'none';
 
-  toggleAdminFields();
   openModal('modal-user');
-}
-function openEditUser(id){
+}function openEditUser(id){
   const u=Store.getUserById(id); if(!u) return;
   document.getElementById('um-id').value=id;
   document.getElementById('um-name').value=u.name;
@@ -311,27 +415,12 @@ function openEditUser(id){
   document.getElementById('um-college').value=u.college||'';
   document.getElementById('um-dept').value=u.dept||'';
   document.getElementById('um-year').value=u.year||'1';
-  
-  // Populate admin fields if editing an admin
-  const managed = Store.getManagedQuizzes();
-  const q = managed.find(m => m.adminId === id);
-  if(q){
-    document.getElementById('um-admin-college').value = q.collegeName;
-    document.getElementById('um-admin-code').value = q.collegeCode;
-    document.getElementById('um-admin-quizid').value = q.quizId;
-  } else {
-    document.getElementById('um-admin-college').value='';
-    document.getElementById('um-admin-code').value='';
-    document.getElementById('um-admin-quizid').value='';
-  }
-
   document.getElementById('um-err').textContent='';
   document.getElementById('user-modal-title').textContent='EDIT USER';
 
   const optAdmin = document.querySelector('#um-role option[value="admin"]');
-  if(optAdmin) optAdmin.style.display = 'block';
+  if(optAdmin) optAdmin.style.display = 'none';
 
-  toggleAdminFields();
   openModal('modal-user');
 }
 function saveUser(){
@@ -346,104 +435,22 @@ function saveUser(){
   const dept=document.getElementById('um-dept').value.trim();
   const year=document.getElementById('um-year').value;
 
-  const adminCollege = document.getElementById('um-admin-college').value.trim();
-  const adminCode = document.getElementById('um-admin-code').value.trim();
-  const adminQuizId = document.getElementById('um-admin-quizid').value.trim().toUpperCase();
-
   const err=document.getElementById('um-err');
   if(!name||!roll||!username||!password||!college||!dept){ err.textContent='All fields are required.'; return; }
-  
-  if(role === 'admin' && (!adminCollege || !adminCode)){
-    err.textContent = 'College name and code are required for Admins (in session details).';
-    return;
-  }
-
   const users=Store.getUsers();
   // if(users.find(u=>u.username===username&&u.id!==id)){ err.textContent='Username taken.'; return; }
-  
-  const userId = id || genId();
-
   if(id){
     Store.updateUser(id,{name,roll,username,password,role,college,dept,year});
     toast('User updated!','success');
-    
-    // Manage quiz session for admin
-    if(role === 'admin'){
-      const managed = Store.getManagedQuizzes();
-      const existingIdx = managed.findIndex(m => m.adminId === id);
-      const quizId = adminQuizId || (existingIdx >= 0 ? managed[existingIdx].quizId : Store.generateQuizId());
-      
-      const sessionData = {
-        quizId,
-        adminId: id,
-        collegeName: adminCollege,
-        collegeCode: adminCode,
-        expiry: (existingIdx >= 0 ? managed[existingIdx].expiry : null),
-        status: (existingIdx >= 0 ? managed[existingIdx].status : 'active')
-      };
-
-      if(existingIdx >= 0) {
-        managed[existingIdx] = sessionData;
-        Store.saveManagedQuizzes(managed);
-      } else {
-        Store.addManagedQuiz(sessionData);
-      }
-      Store.addActivity(`Admin session <strong>${quizId}</strong> updated for <strong>${name}</strong>`,'success');
-    }
   } else {
-    Store.addUser({id:userId,name,roll,username,password,role,college,dept,year,registeredAt:Date.now()});
+    const newUser = {id:genId(),name,roll,username,password,role,college,dept,year,registeredAt:Date.now(),currentQuizId:Store.getSession().quizId};
+    Store.addUser(newUser);
     toast('User created!','success');
-    Store.addActivity(`User <strong>${name}</strong> created by Superadmin`,'success');
-    
-    // Generate quiz if role is admin
-    if(role === 'admin'){
-      const quizId = adminQuizId || Store.generateQuizId();
-      Store.addManagedQuiz({
-        quizId,
-        adminId: userId,
-        collegeName: adminCollege,
-        collegeCode: adminCode,
-        expiry: null,
-        status: 'active'
-      });
-      Store.addActivity(`Quiz <strong>${quizId}</strong> manual generated for new admin <strong>${name}</strong>`,'success');
-    }
+    Store.addActivity(`User <strong>${name}</strong> created by admin`,'success');
   }
-  closeModal('modal-user'); 
-  renderUsers();
-  // Ensure the managed admins table is updated if role was admin
-  if(role === 'admin') renderManaged();
+  closeModal('modal-user'); renderUsers();
 }
-function changeUserRole(id,role){ 
-  const oldU = Store.getUserById(id);
-  if(!oldU) return;
-
-  Store.updateUser(id,{role}); 
-  const u=Store.getUserById(id); 
-  if(!u) return;
-  
-  if(role === 'admin'){
-    const managed = Store.getManagedQuizzes();
-    if(!managed.find(m => m.adminId === id)){
-      const quizId = Store.generateQuizId();
-      Store.addManagedQuiz({
-        quizId,
-        adminId: id,
-        collegeName: u.name,
-        collegeCode: u.roll || 'N/A',
-        expiry: null,
-        status: 'active'
-      });
-      Store.addActivity(`Quiz <strong>${quizId}</strong> auto-generated for promoted admin <strong>${u.name}</strong>`,'success');
-      toast(`Promoted to Admin! Generated Quiz ID: ${quizId}`, 'success');
-    }
-  }
-  
-  Store.addActivity(`<strong>${u?.name}</strong> → ${role}`,'info'); 
-  toast(`Role → ${role}`,'success'); 
-  if(currentSec==='users') renderUsers(); 
-  if(currentSec==='managed-admins') renderManaged();
-}
+function changeUserRole(id,role){ Store.updateUser(id,{role}); const u=Store.getUserById(id); Store.addActivity(`<strong>${u?.name}</strong> → ${role}`,'info'); toast(`Role → ${role}`,'success'); if(currentSec==='users') renderUsers(); }
 function deleteUser(id){
   const u=Store.getUserById(id);
   customConfirm(`Delete <strong>${u?.name}</strong>?`, '🗑️', () => {
@@ -489,7 +496,13 @@ function openEditTeam(id){
 }
 
 function renderTeamForm(team){
-  const users=Store.getUsers().filter(u=>u.role==='participant');
+  const sess = Store.getSession();
+  let users=Store.getUsers().filter(u=>u.role==='participant');
+  
+  // Filter participants by quizId so admins only see their own joined participants
+  if (!sess.isSuper && sess.quizId) {
+    users = users.filter(u => u.currentQuizId === sess.quizId);
+  }
   const allTeams=Store.getTeams();
   const assignedIds=new Set();
   allTeams.forEach(t=>{ if(!team||t.id!==team.id)(t.memberIds||[]).forEach(id=>assignedIds.add(id)); });
@@ -553,9 +566,9 @@ function saveTeam(){
     Store.updateTeam(id,{teamNumber,name,username,password,memberLimit,memberIds});
     toast('Team updated!','success');
   } else {
-    const raw=load(KEYS.TEAMS,[])||[];
-    raw.push({id:genId(),teamNumber,name,username,password,memberLimit,memberIds,status:'inactive',score:0,correctCount:0,answers:{},passedQs:[],roundScores:{}});
-    save(KEYS.TEAMS,raw);
+    const teams = Store.getTeams();
+    teams.push({id:genId(),teamNumber,name,username,password,memberLimit,memberIds,status:'inactive',score:0,correctCount:0,answers:{},passedQs:[],roundScores:{}});
+    Store.saveTeams(teams);
     toast('Team created!','success');
     Store.addActivity(`Team <strong>T${teamNumber}: ${name}</strong> created`,'success');
   }
@@ -597,9 +610,12 @@ function generateAutoTeams(){
 
   if(!eligible.length){ err.textContent = 'No participants found matching these filters.'; return; }
 
-  // Target online users first if possible, or just shuffle all eligible
-  const online = eligible.filter(u => loginStatus[u.id]?.status === 'online').sort(()=>Math.random()-0.5);
-  const offline = eligible.filter(u => loginStatus[u.id]?.status !== 'online').sort(()=>Math.random()-0.5);
+  // Target online users first if possible using Login History
+  const history = Store.getLoginHistory();
+  const activeIds = new Set(history.filter(h => !h.logoutTime).map(h => h.name)); // name is used in history
+
+  const online = eligible.filter(u => activeIds.has(u.name)).sort(()=>Math.random()-0.5);
+  const offline = eligible.filter(u => !activeIds.has(u.name)).sort(()=>Math.random()-0.5);
   const finalPool = [...online, ...offline];
 
   let teamsToCreate = [];
@@ -615,20 +631,23 @@ function generateAutoTeams(){
   }
 
   customConfirm(`Generate <strong>${teamsToCreate.length} teams</strong> from ${finalPool.length} participants?`, '⚡', () => {
+    const quizId = Store.getSession().quizId || 'GLOBAL';
     const currentTeams = Store.getTeams();
     const newTeams = [];
+    const ts = Date.now();
 
     teamsToCreate.forEach((mems, i) => {
       if(!mems.length) return;
-      const leader = mems[0]; 
+      const leader = mems[0]; // First one is leader
       const teamId = genId();
+      const tNum = currentTeams.length + i + 1;
       newTeams.push({
         id: teamId,
-        name: `Team ${currentTeams.length + i + 1}`,
-        teamNumber: currentTeams.length + i + 1,
-        username: `team${currentTeams.length + i + 1}_auto`,
-        password: Math.random().toString(36).substr(2, 6),
-        quizId: 'GLOBAL',
+        name: `Team ${tNum}`,
+        teamNumber: tNum,
+        username: `team${tNum}_${quizId.toLowerCase()}`,
+        password: Math.random().toString(36).substr(2, 6), // Generate random password
+        quizId: quizId,
         memberIds: mems.map(m => m.id),
         leaderId: leader.id,
         status: 'active',
@@ -636,10 +655,11 @@ function generateAutoTeams(){
         correctCount: 0,
         answers: {},
         roundScores: {},
-        passedQs: []
+        passedQs: [],
+        createdAt: ts
       });
 
-      Store.addActivity(`Auto-Team: <strong>Team ${currentTeams.length + i + 1}</strong> created. Leader: ${leader.name}`, 'success');
+      Store.addActivity(`Auto-Team: <strong>Team ${tNum}</strong> created (${mems.length} members). Leader: ${leader.name}`, 'success');
     });
 
     Store.saveTeams([...currentTeams, ...newTeams]);
@@ -660,6 +680,7 @@ function runElimination(){
   const teams = Store.getTeams().filter(t => t.status === 'active');
   if(!teams.length){ err.textContent = 'No active teams to eliminate.'; return; }
 
+  // Sort by score (descending)
   const sorted = [...teams].sort((a,b) => (b.score||0) - (a.score||0));
   let toEliminate = [];
 
@@ -676,7 +697,7 @@ function runElimination(){
   customConfirm(`Eliminate <strong>${toEliminate.length} teams</strong>? They will be set to inactive.`, '🚫', () => {
     toEliminate.forEach(t => {
       Store.updateTeam(t.id, { status: 'inactive' });
-      Store.addActivity(`Team <strong>${t.name}</strong> ELIMINATED`, 'error');
+      Store.addActivity(`Team <strong>${t.name}</strong> was ELIMINATED`, 'error');
     });
     toast(`Successfully eliminated ${toEliminate.length} teams!`,'success');
     closeModal('modal-elimination');
@@ -713,46 +734,43 @@ function renderRounds(){
 function openAddRound(){ document.getElementById('rm-id').value=''; ['rm-name','rm-instr'].forEach(id=>document.getElementById(id).value=''); document.getElementById('rm-num').value=Store.getRounds().length+1; document.getElementById('rm-qcount').value='5'; document.getElementById('rm-stage').value='Preliminary'; document.getElementById('rm-qtime').value=Store.getSettings().defaultTimePerQuestion||'60'; document.getElementById('rm-rtime').value='0'; document.getElementById('rm-err').textContent=''; document.getElementById('round-modal-title').textContent='ADD ROUND'; openModal('modal-round'); }
 function openEditRound(id){ const r=Store.getRounds().find(x=>x.id===id); if(!r) return; document.getElementById('rm-id').value=id; document.getElementById('rm-name').value=r.name; document.getElementById('rm-num').value=r.roundNumber||''; document.getElementById('rm-stage').value=r.stage||'Preliminary'; document.getElementById('rm-instr').value=r.instructions||''; document.getElementById('rm-qcount').value=r.questionCount; document.getElementById('rm-qtime').value=r.timePerQuestion; document.getElementById('rm-rtime').value=r.roundTimeLimit||0; document.getElementById('rm-err').textContent=''; document.getElementById('round-modal-title').textContent='EDIT ROUND'; openModal('modal-round'); }
 function saveRound(){ const id=document.getElementById('rm-id').value; const name=document.getElementById('rm-name').value.trim(); const roundNumber=parseInt(document.getElementById('rm-num').value)||1; const stage=document.getElementById('rm-stage').value; const instructions=document.getElementById('rm-instr').value.trim(); const questionCount=parseInt(document.getElementById('rm-qcount').value)||0; const timePerQuestion=parseInt(document.getElementById('rm-qtime').value)||60; const roundTimeLimit=parseInt(document.getElementById('rm-rtime').value)||0; const err=document.getElementById('rm-err'); if(!name){err.textContent='Name required.';return;} if(questionCount<1){err.textContent='At least 1 question required.';return;} const rounds=Store.getRounds(); if(id){const idx=rounds.findIndex(r=>r.id===id);if(idx>=0)rounds[idx]={...rounds[idx],name,roundNumber,stage,instructions,questionCount,timePerQuestion,roundTimeLimit};toast('Updated!','success');}else{rounds.push({id:genId(),name,roundNumber,stage,instructions,questionCount,timePerQuestion,roundTimeLimit});toast('Added!','success');} Store.saveRounds(rounds); closeModal('modal-round'); renderRounds(); }
-function deleteRound(id){ const r=Store.getRounds().find(x=>x.id===id); customConfirm(`Delete round <strong>${r?.name}</strong>? All mapped questions will remain in bank.`, '🗑️', () => { Store.saveRounds(Store.getRounds().filter(x=>x.id!==id)); toast('Round deleted','warning'); renderRounds(); }); }
+function deleteRound(id){
+  const r=Store.getRounds().find(x=>x.id===id);
+  customConfirm(`Delete round <strong>${r?.name}</strong>? All mapped questions will remain in bank.`, '🗑️', () => {
+    Store.saveRounds(Store.getRounds().filter(x=>x.id!==id));
+    toast('Round deleted','warning');
+    renderRounds();
+  });
+}
 function moveRound(id,dir){ const rounds=Store.getRounds(); const idx=rounds.findIndex(r=>r.id===id); const ni=idx+dir; if(ni<0||ni>=rounds.length) return; [rounds[idx],rounds[ni]]=[rounds[ni],rounds[idx]]; Store.saveRounds(rounds); renderRounds(); }
 
-
-function openTemplatesModal(tab='quick'){
-  switchTmplTab(tab);
+// ─── QUIZ TEMPLATES ───────────────────────────────────────────
+function openTemplatesModal(){
   openModal('modal-templates');
   updateTemplatePreview();
 }
 
-function switchTmplTab(type){
-  document.querySelectorAll('#modal-templates .ltab').forEach(t=>t.classList.remove('active'));
-  document.querySelectorAll('#modal-templates .lpanel').forEach(p=>p.classList.remove('active'));
-  document.getElementById('tab-tmpl-'+type)?.classList.add('active');
-  document.getElementById('panel-tmpl-'+type)?.classList.add('active');
-}
 
-function autoSetTmplTime(){
-  const rounds = parseInt(document.getElementById('tmpl-rounds').value);
-  const timeMap = { 3:30, 4:35, 5:40, 10:50, 15:60 };
-  const target = timeMap[rounds] || 30;
-  document.getElementById('tmpl-time').value = target;
-  
-  const badge = document.getElementById('auto-time-badge');
-  badge?.classList.remove('hidden');
-  setTimeout(()=>badge?.classList.add('hidden'), 2000);
+function onRoundsChange(){
+  const r = parseInt(document.getElementById('tmpl-rounds').value);
+  const tEl = document.getElementById('tmpl-time');
+  const mapping = { 3: 30, 4: 35, 5: 40, 10: 50, 15: 60 };
+  if(mapping[r]) {
+    tEl.value = mapping[r];
+    const badge = document.getElementById('auto-set-badge-time');
+    badge.style.display = 'inline-block';
+    setTimeout(() => badge.style.display = 'none', 2000);
+  }
   updateTemplatePreview();
 }
 
-function applyPreset(name, rounds, time) {
-  applyQuizTemplate(name, rounds, time);
-}
-
 function updateTemplatePreview(){
-
   const roundCount = parseInt(document.getElementById('tmpl-rounds')?.value || 3);
   const totalMins = parseInt(document.getElementById('tmpl-time')?.value || 30);
   const qsPerRound = 5;
   const totalQs = roundCount * qsPerRound;
   const timePerQ = Math.floor((totalMins * 60) / totalQs);
+
   
   // Calculate stage breakdown
   let stages = { Preliminary: 0, Selection: 0, Final: 0 };
@@ -777,7 +795,6 @@ function updateTemplatePreview(){
     <span style="color:var(--gold)">${stages.Selection} Selection</span> → 
     <span style="color:var(--green)">${stages.Final} Final</span>`;
 }
-
 function applyQuizTemplate(presetName = null, presetRounds = null, presetTime = null){
   const roundCount = presetRounds || parseInt(document.getElementById('tmpl-rounds').value);
   const totalMins = presetTime || parseInt(document.getElementById('tmpl-time').value);
@@ -827,6 +844,12 @@ function applyQuizTemplate(presetName = null, presetRounds = null, presetTime = 
     renderRounds();
   });
 }
+
+function applyPreset(name, rounds, time){
+  applyQuizTemplate(name, rounds, time);
+}
+
+
 // ─── QUESTIONS ────────────────────────────────────────────────
 function renderQuestions(){
   const questions=Store.getQuestions(), rounds=Store.getRounds();
@@ -852,20 +875,24 @@ function renderQuestions(){
       <td><span class="badge badge-green">${(q.correct||[]).map(c=>String.fromCharCode(65+c)).join(',')}</span></td>
       <td><button class="btn-icon" onclick="openEditQ('${q.id}')">✏️</button><button class="btn-icon" style="color:var(--red)" onclick="deleteQ('${q.id}')">🗑️</button></td></tr>`;
   }).join('')+'</tbody></table>';
-  onSelectRow('questions');
 }
 
 function renderOptFields(){ const type=document.getElementById('qm-type').value; const wrap=document.getElementById('qm-opts'); wrap.innerHTML=`<div class="form-group"><label>OPTIONS ${type==='multiple'?'(check all correct)':'(select correct)'}</label>`+['A','B','C','D'].map((l,i)=>`<div class="opt-row"><input type="${type==='multiple'?'checkbox':'radio'}" name="q-correct" value="${i}" id="qc-${i}" style="accent-color:var(--green)"><label for="qc-${i}" class="opt-lbl">${l}</label><input type="text" id="qopt-${i}" placeholder="Option ${l}"></div>`).join('')+'</div>'; }
 function openAddQ(){ document.getElementById('qm-id').value=''; document.getElementById('qm-text').value=''; document.getElementById('qm-type').value='single'; document.getElementById('qm-expl').value=''; document.getElementById('qm-err').textContent=''; document.getElementById('q-modal-title').textContent='ADD QUESTION'; renderOptFields(); openModal('modal-question'); }
 function openEditQ(id){ const q=Store.getQuestions().find(x=>x.id===id); if(!q) return; document.getElementById('qm-id').value=id; document.getElementById('qm-text').value=q.text; document.getElementById('qm-type').value=q.type; document.getElementById('qm-expl').value=q.explanation||''; document.getElementById('qm-err').textContent=''; document.getElementById('q-modal-title').textContent='EDIT QUESTION'; renderOptFields(); setTimeout(()=>{q.options.forEach((opt,i)=>{const el=document.getElementById(`qopt-${i}`);if(el)el.value=opt;});q.correct.forEach(c=>{const el=document.getElementById(`qc-${c}`);if(el)el.checked=true;});},20); openModal('modal-question'); }
 function saveQuestion(){ const id=document.getElementById('qm-id').value; const text=document.getElementById('qm-text').value.trim(); const type=document.getElementById('qm-type').value; const expl=document.getElementById('qm-expl').value.trim(); const err=document.getElementById('qm-err'); if(!text){err.textContent='Text required.';return;} const options=[]; for(let i=0;i<4;i++){const v=document.getElementById(`qopt-${i}`)?.value.trim();if(!v){err.textContent=`Option ${String.fromCharCode(65+i)} required.`;return;}options.push(v);} const correct=[...document.querySelectorAll('[name="q-correct"]:checked')].map(c=>parseInt(c.value)); if(!correct.length){err.textContent='Mark at least one correct answer.';return;} if(type==='single'&&correct.length>1){err.textContent='Single: one correct only.';return;} const qs=Store.getQuestions(); if(id){const idx=qs.findIndex(q=>q.id===id);if(idx>=0)qs[idx]={...qs[idx],text,type,options,correct,explanation:expl};toast('Updated!','success');}else{qs.push({id:genId(),text,type,options,correct,explanation:expl});toast('Added!','success');} Store.saveQuestions(qs); closeModal('modal-question'); renderQuestions(); }
-function deleteQ(id){ customConfirm('Permanently delete this question?', '🗑️', () => { Store.saveQuestions(Store.getQuestions().filter(q=>q.id!==id)); toast('Question deleted','warning'); renderQuestions(); }); }
+function deleteQ(id){
+  customConfirm('Permanently delete this question?', '🗑️', () => {
+    Store.saveQuestions(Store.getQuestions().filter(q=>q.id!==id));
+    toast('Question deleted','warning');
+    renderQuestions();
+  });
+}
 function openUpload(){ document.getElementById('upload-preview').innerHTML=''; document.getElementById('btn-import').classList.add('hidden'); openModal('modal-upload'); }
 function handleDrop(e){ e.preventDefault(); e.currentTarget.classList.remove('drag-over'); processFile(e.dataTransfer.files[0]); }
 function handleFileInput(e){ processFile(e.target.files[0]); }
 function processFile(file){ if(!file) return; const reader=new FileReader(); reader.onload=e=>{const lines=e.target.result.split('\n').filter(l=>l.trim()); pendingImport=[]; let errs=0; lines.forEach(line=>{const p=line.split('|').map(x=>x.trim()); if(p.length<6){errs++;return;} const[qText,a,b,c,d,ans]=p; const correct=ans.toUpperCase().split(',').map(s=>s.trim()).map(l=>l.charCodeAt(0)-65).filter(n=>n>=0&&n<4); const type=correct.length>1?'multiple':'single'; if(!qText||!a||!b||!c||!d||!correct.length){errs++;return;} pendingImport.push({id:genId(),text:qText,options:[a,b,c,d],correct,type,explanation:''});}); const prev=document.getElementById('upload-preview'); prev.innerHTML=`<span class="badge badge-green">✓ ${pendingImport.length} ready</span>${errs?` <span class="badge badge-red">⚠ ${errs} skipped</span>`:''}${pendingImport.slice(0,5).map((q,i)=>`<div class="text-xs text-muted" style="padding:3px 0">${i+1}. ${q.text}</div>`).join('')}`; document.getElementById('btn-import').classList.toggle('hidden',!pendingImport.length); }; reader.readAsText(file); }
 function importQuestions(){ if(!pendingImport.length) return; Store.saveQuestions([...Store.getQuestions(),...pendingImport]); toast(`${pendingImport.length} imported!`,'success'); Store.addActivity(`${pendingImport.length} questions imported via CSV`,'success'); pendingImport=[]; closeModal('modal-upload'); renderQuestions(); }
-
 
 // ─── QUIZ CONTROL ─────────────────────────────────────────────
 function renderControl(){
@@ -886,11 +913,9 @@ function renderControl(){
   const tBadge = document.getElementById('c-template-badge');
   if(tBadge){
     if(quiz.templateName){
-      tBadge.classList.remove('hidden');
       tBadge.style.display = 'inline-flex';
       tBadge.innerHTML = `📋 ${quiz.templateName} · ${quiz.templateDuration} min`;
     } else {
-      tBadge.classList.add('hidden');
       tBadge.style.display = 'none';
     }
   }
@@ -950,8 +975,96 @@ function renderControl(){
   renderTeamAnswers();
   renderScoreboard('c-scores');
   renderLoginStatusPanel();
+  renderCommandTargets();
   startAdminTimer();
 }
+
+function renderCommandTargets(){
+  const teams = Store.getActiveTeams();
+  const sel = document.getElementById('cmd-target-team');
+  if(!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All Active Teams</option>' + 
+    teams.map(t => `<option value="${t.id}" ${t.id===cur?'selected':''}>T${t.teamNumber}: ${t.name}</option>`).join('');
+}
+
+function sendGlobalMsg(){
+  const msg = document.getElementById('cmd-broadcast-msg').value.trim();
+  if(!msg) return;
+  socket.emit('admin_cmd', { type: 'msg', target: 'all', msg });
+  document.getElementById('cmd-broadcast-msg').value = '';
+  toast('Global message sent', 'success');
+  Store.addActivity(`📢 Admin Broadcast: ${msg}`, 'info');
+}
+
+function cmdAction(action){
+  const target = document.getElementById('cmd-target-team').value;
+  const msgInput = document.getElementById('cmd-broadcast-msg');
+  const msg = msgInput.value.trim();
+  
+  if(action === 'hold'){
+    const quiz = Store.getQuiz();
+    if(!quiz.holdStatus) quiz.holdStatus = {};
+    const currentStatus = !!quiz.holdStatus[target];
+    quiz.holdStatus[target] = !currentStatus;
+    Store.saveQuiz(quiz);
+    socket.emit('admin_cmd', { type: 'hold', target, status: !currentStatus });
+    toast(`${target ? 'Team' : 'All teams'} ${!currentStatus ? 'HELD' : 'RELEASED'}`, 'warning');
+    Store.addActivity(`🛑 Admin ${!currentStatus ? 'held' : 'released'} ${target || 'all teams'}`, 'warning');
+    return;
+  }
+
+  if(!msg && (action === 'warn' || action === 'msg')) {
+    toast('Please enter a message first', 'error');
+    return;
+  }
+
+  socket.emit('admin_cmd', { type: action, target: target || 'all', msg });
+  msgInput.value = '';
+  toast(`${action.toUpperCase()} sent`, 'success');
+  Store.addActivity(`⚠️ Admin ${action}: ${msg} (Target: ${target || 'All'})`, 'warning');
+}
+
+// ─── MIC BROADCAST (PTT) ─────────────────────────────────────
+let mediaRecorder = null;
+let audioChunks = [];
+
+async function startMicBroadcast(){
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream);
+    audioChunks = [];
+    
+    mediaRecorder.ondataavailable = e => { if(e.data.size > 0) audioChunks.push(e.data); };
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      const target = document.getElementById('cmd-target-team').value || 'all';
+      const reader = new FileReader();
+      reader.onload = () => {
+        socket.emit('admin_audio', { audio: reader.result, target });
+      };
+      reader.readAsDataURL(blob);
+      stream.getTracks().forEach(t => t.stop());
+    };
+
+    
+    mediaRecorder.start();
+    document.getElementById('btn-admin-mic').style.boxShadow = '0 0 15px var(--red)';
+    document.getElementById('btn-admin-mic').style.transform = 'scale(1.2)';
+    Store.addActivity('🎤 Admin speaking...', 'warning');
+  } catch(e) {
+    toast('Mic error: ' + e.message, 'error');
+  }
+}
+
+function stopMicBroadcast(){
+  if(mediaRecorder && mediaRecorder.state !== 'inactive'){
+    mediaRecorder.stop();
+    document.getElementById('btn-admin-mic').style.boxShadow = 'none';
+    document.getElementById('btn-admin-mic').style.transform = 'scale(1)';
+  }
+}
+
 
 function renderLoginStatusPanel(){
   const el=document.getElementById('c-login-status'); if(!el) return;
@@ -986,7 +1099,11 @@ function tickAdminTimer(){
     if(ptWrap) ptWrap.style.display='block';
     if(ptEl){ ptEl.textContent=rem; ptEl.className='timer-big'+(rem<=5?' danger':rem<=10?' warn':''); }
     if(ptBar){ ptBar.style.width=((rem/quiz.participantTimeLimit)*100)+'%'; ptBar.className='tbar'+(rem<=5?' tbar-danger':rem<=10?' tbar-warn':''); }
-    if(rem===0&&!quiz._participantTimerHandled){ const q2=Store.getQuiz(); q2._participantTimerHandled=true; Store.saveQuiz(q2); Store.addActivity('⏰ Participant time up → next question','warning'); advanceToNextQuestion(); renderControl(); }
+    if(rem===0&&!quiz._participantTimerHandled){ 
+      Store.addActivity('⏰ Participant time up → next question','warning'); 
+      advanceToNextQuestion(quiz.globalQIdx); 
+      renderControl(); 
+    }
   } else { if(ptWrap) ptWrap.style.display='none'; }
 
   if(quiz.status!=='running'){ if(timerEl){timerEl.textContent=quiz.timerLimit||'—';timerEl.className='timer-big';} if(bar){bar.style.width='100%';bar.className='tbar';} if(rtEl) rtEl.textContent=''; return; }
@@ -1070,8 +1187,9 @@ function quizPause(){ const quiz=Store.getQuiz(); quiz.status='paused'; quiz._pa
 function quizResume(){ const quiz=Store.getQuiz(); const dur=quiz._pausedAt?Date.now()-quiz._pausedAt:0; quiz.timerStart=(quiz.timerStart||Date.now())+dur; if(quiz.roundTimerStart)quiz.roundTimerStart+=dur; if(quiz.participantTimerStart)quiz.participantTimerStart+=dur; quiz.status='running'; quiz._timerEndHandled=false; delete quiz._pausedAt; Store.saveQuiz(quiz); toast('Resumed!','success'); renderControl(); }
 
 function quizNext(){
+  const quiz = Store.getQuiz();
   // Manual advance — treated as "move on regardless"
-  advanceToNextQuestion();
+  advanceToNextQuestion(quiz.globalQIdx);
   renderControl();
 }
 
@@ -1104,6 +1222,7 @@ function nextRound(){
   const curStage = rounds[quiz.currentRoundIdx]?.stage || 'Preliminary';
   const nextStage = rounds[ni]?.stage || 'Preliminary';
   
+  // Stage transition gate — require explicit admin approval
   if(curStage !== nextStage){
     customConfirm(`<div style="text-align:center"><div style="font-size:28px;margin-bottom:8px">⚡</div><div class="font-title" style="font-size:16px;color:var(--gold);margin-bottom:8px">${curStage.toUpperCase()} → ${nextStage.toUpperCase()}</div><div class="text-sm text-muted">You are transitioning to the <strong>${nextStage}</strong> stage. Currently <strong>${teams.length} active teams</strong> remain.<br><br>Make sure you have eliminated teams if needed before proceeding.</div></div>`, '⚡', () => {
       proceedToNextRound(quiz, rounds, teams, ni);
@@ -1111,6 +1230,7 @@ function nextRound(){
     return;
   }
   
+  // Same stage — still require explicit click (already done via button), just proceed
   proceedToNextRound(quiz, rounds, teams, ni);
 }
 
@@ -1137,15 +1257,18 @@ function passToNext(){
   if(cur){ const passedQs=(cur.passedQs||[]); if(!passedQs.includes(quiz.globalQIdx)) passedQs.push(quiz.globalQIdx); Store.updateTeam(cur.id,{passedQs}); }
 
   // LIMIT: Question only goes to ONE PASS TEAM after the starting team
-  const passLimit = Math.min(2, teams.length);
+  const passLimit = 2; // Fixed at 2 for standard quiz (Start team + 1 pass team)
   if(quiz.passChain.length >= passLimit){
     // ALL allowed teams passed → participant turn
     const settings=Store.getSettings();
     const q2={...quiz,status:'participant_turn',currentTeamIdx:-1,participantTurn:true,participantTimerStart:Date.now(),participantTimeLimit:settings.participantTimeLimit||30,_participantTimerHandled:false};
     Store.saveQuiz(q2);
-    Store.addActivity(`📢 Max passes reached Q${quiz.currentQInRound+1} → PARTICIPANTS (${settings.participantTimeLimit||30}s)`,'warning');
+    Store.addActivity(`📢 Max passes reached Q${quiz.currentQInRound+1} → PARTICIPANTS`,'warning');
     toast('Goes to participants!','warning');
-    renderControl(); return;
+    renderControl();
+    // Force immediate broadcast
+    if(typeof syncDataToServer === 'function') syncDataToServer('sq_quiz', JSON.stringify(q2));
+    return;
   }
 
   // Next team in cyclic order that hasn't passed
@@ -1230,7 +1353,12 @@ function stopCamRefresh(){ if(camRefreshIv){ clearInterval(camRefreshIv); camRef
 // ─── ACTIVITY ─────────────────────────────────────────────────
 function renderActivityFeed(id,limit=60){
   const el=document.getElementById(id);if(!el)return;
-  const list=Store.getActivity().slice(0,limit);
+  let list=Store.getActivity();
+  
+  // Normal admins CANNOT see super admin activities
+  list = list.filter(a => !a.isSuper);
+
+  list = list.slice(0,limit);
   const colors={success:'var(--green)',warning:'var(--gold)',error:'var(--red)',info:'var(--cyan)'};
   el.innerHTML=list.map(a=>`<div class="act-row"><div class="act-dot" style="background:${colors[a.type]||'var(--cyan)'}"></div><span class="act-time">${a.time}</span><span class="act-text">${a.text}</span></div>`).join('')||'<span class="text-muted text-sm">No activity.</span>'; 
 }function renderActivity(){ renderActivityFeed('full-activity',200); }
@@ -1242,19 +1370,20 @@ function loadSettings(){
   const s = Store.getSettings();
   
   if (!sess.isSuper) {
+    // Normal admin: Show their OWN user credentials
     const u = Store.getUserById(sess.userId);
     if(u){
       document.getElementById('s-admin-user').value = u.username;
       document.getElementById('s-admin-pw').value = u.password;
     }
   } else {
+    // Superadmin: Show global credentials
     document.getElementById('s-admin-user').value = s.adminUsername || '';
     document.getElementById('s-admin-pw').value = s.adminPassword || '';
   }
 
-  document.getElementById('s-captcha').value=s.captchaCode||''; 
+  document.getElementById('s-captcha').value=s.captchaCode||'';
   document.getElementById('s-q-time').value=s.defaultTimePerQuestion;
-  document.getElementById('s-p-time').value=s.participantTimeLimit;
   document.getElementById('s-overall-time').value=s.overallTimeLimit;
   document.getElementById('s-instructions').value=s.globalInstructions;
   
@@ -1264,7 +1393,6 @@ function loadSettings(){
     document.getElementById('s-prize-3').value = s.prizes[2] || '';
   }
 }
-
 function saveSettings(){
   const sess = Store.getSession();
   const s = Store.getSettings();
@@ -1272,10 +1400,12 @@ function saveSettings(){
   const newP = document.getElementById('s-admin-pw').value.trim();
 
   if (!sess.isSuper) {
+    // Normal admin: Update their OWN user record
     if(!newU || !newP){ toast('Username and Password cannot be empty', 'error'); return; }
     Store.updateUser(sess.userId, { username: newU, password: newP });
     Store.addActivity(`Admin <strong>${sess.name}</strong> updated their own credentials`, 'success');
   } else {
+    // Superadmin: Update global settings
     s.adminUsername = newU || s.adminUsername;
     s.adminPassword = newP || s.adminPassword;
   }
@@ -1293,591 +1423,44 @@ function saveSettings(){
       document.getElementById('s-prize-3').value
     ]
   });
-  toast('Settings saved successfully','success');
+  toast('Settings saved successfully', 'success');
 }
-
-
 
 // ─── MODALS ───────────────────────────────────────────────────
-function openModal(id){ 
-  const el = document.getElementById(id);
-  if(el) el.classList.add('open'); 
-}
-function closeModal(id){ 
-  const el = document.getElementById(id);
-  if(el) el.classList.remove('open'); 
-}
-
-onUpdate(({key})=>{
-  if(key===KEYS.QUIZ||key===KEYS.TEAMS||key===KEYS.LOGIN_STATUS || key.includes('sq_quiz_') || key.includes('sq_teams_')){ 
-    if(currentSec==='control') renderControl(); 
-    if(currentSec==='dashboard') renderDashboard(); 
-    if(currentSec==='reports') renderReports();
-  }
-  if(key===KEYS.USERS){
-    if(currentSec==='users') renderUsers();
-  }
-  if(key===KEYS.QUIZ_REQUESTS || key===KEYS.MANAGED_QUIZZES){
-    if(currentSec==='quiz-requests') renderRequests();
-    if(currentSec==='managed-admins') renderManaged();
-    if(currentSec==='reports') renderReports();
-    renderAlertsBadge();
-  }
-});
-
-// ─── QUIZ REQUESTS ────────────────────────────────────────────
-function renderRequests(){
-  const reqs = Store.getQuizRequests();
-  const el = document.getElementById('requests-table');
-  if(!reqs.length){ el.innerHTML='<div class="empty-state">No requests yet.</div>'; return; }
-  
-  el.innerHTML=`<table class="dtable"><thead><tr><th>TIME</th><th>COLLEGE</th><th>CODE</th><th>PENDING ADMIN</th><th>STATUS</th><th>ACTIONS</th></tr></thead><tbody>`+
-  reqs.map(r=>{
-    const statusClass = r.status==='pending'?'badge-gold':r.status==='accepted'?'badge-green':'badge-red';
-    return `<tr>
-      <td class="text-xs text-muted">${new Date(r.time).toLocaleString()}</td>
-      <td><strong>${r.collegeName}</strong></td>
-      <td class="text-cyan font-mono text-xs">${r.collegeCode}</td>
-      <td class="text-sm">${r.username}</td>
-      <td><span class="badge ${statusClass}">${r.status.toUpperCase()}</span></td>
-      <td>
-        ${r.status==='pending' ? `
-          <button class="btn-sm btn-green" onclick="openQuizAction('${r.id}','accept')">ACCEPT</button>
-          <button class="btn-sm btn-red" onclick="openQuizAction('${r.id}','ignore')">IGNORE</button>
-        ` : `<span class="text-xs text-muted">${r.reason||'Processed'}</span>`}
-        <button class="btn-icon ml-1" onclick="deleteQuizRequest('${r.id}')" style="color:var(--red); font-size:14px">🗑️</button>
-      </td>
-    </tr>`;
-  }).join('')+'</tbody></table>';
-  
-  const badge = document.getElementById('req-alert-badge');
-  const count = reqs.filter(r=>r.status==='pending').length;
-  if(badge){ badge.textContent=count; badge.classList.toggle('hidden', !count); }
+function openModal(id){ document.getElementById(id).classList.add('open'); }
+function closeModal(id){ document.getElementById(id).classList.remove('open'); }
+function customConfirm(msg, icon, onYes){
+  document.getElementById('conf-msg').innerHTML = msg;
+  document.getElementById('conf-icon').textContent = icon || '❓';
+  const btn = document.getElementById('btn-conf-yes');
+  btn.onclick = () => { onYes(); closeModal('modal-confirm'); };
+  openModal('modal-confirm');
 }
 
-function renderManaged(){
-  const managed = Store.getManagedQuizzes();
-  const el = document.getElementById('managed-table');
-  if(!managed.length){ el.innerHTML='<div class="empty-state">No managed sessions yet.</div>'; return; }
-  
-  el.innerHTML=`<table class="dtable"><thead><tr><th>QUIZ ID</th><th>COLLEGE</th><th>ADMIN ID</th><th>EXPIRY</th><th>STATUS</th><th>ACTIVITY</th><th>ACTIONS</th></tr></thead><tbody>`+
-  managed.map(m=>{
-    const isExpired = m.expiry && Date.now() > m.expiry;
-    return `<tr>
-      <td class="font-title text-gold text-sm">${m.quizId}</td>
-      <td><strong>${m.collegeName}</strong> <small class="text-muted">(${m.collegeCode})</small></td>
-      <td class="text-xs font-mono">${m.adminId}</td>
-      <td class="text-xs ${isExpired?'text-red':'text-muted'}">${m.expiry?new Date(m.expiry).toLocaleString():'NO LIMIT'}</td>
-      <td><span class="badge ${m.status==='active'?'badge-green':'badge-gray'}">${m.status.toUpperCase()}</span></td>
-      <td><button class="btn-sm btn-cyan" onclick="showAdminActivity('${m.quizId}')">VIEW</button></td>
-      <td>
-        <button class="btn-icon" onclick="openQuizAction('${m.quizId}','edit')">✏️</button>
-        <button class="btn-icon" onclick="removeManagedQuiz('${m.quizId}')" style="color:var(--red)">🗑️</button>
-      </td>
-    </tr>`;
-  }).join('')+'</tbody></table>';
-}
-
-function showAdminActivity(quizId){
-  const summary = Store.getQuizSummary(quizId);
-  document.getElementById('ma-team-count').textContent = summary.teamCount;
-  document.getElementById('ma-round').textContent = summary.round;
-  
-  const statusBox = document.getElementById('ma-status-box');
-  statusBox.innerHTML = `
-    <div class="info-row"><span>Current Status</span><span class="badge badge-cyan">${summary.status.toUpperCase()}</span></div>
-    <div class="info-row"><span>Last Pulse</span><span>${summary.lastSeen}</span></div>
-  `;
-  
-  const actFeed = document.getElementById('ma-activity');
-  actFeed.innerHTML = summary.activities.length ? summary.activities.map(a => `
-    <div class="act-row">
-      <div class="act-dot" style="background:${a.type==='error'?'var(--red)':a.type==='success'?'var(--green)':'var(--cyan)'}"></div>
-      <div class="act-time">${a.time}</div>
-      <div class="act-text">${a.text}</div>
-    </div>
-  `).join('') : '<div class="empty-state">No activity Yet</div>';
-  
-  openModal('modal-managed-activity');
-}
-
-function openQuizAction(id, type){
-  const reqs = Store.getQuizRequests();
-  const managed = Store.getManagedQuizzes();
-  const elD = document.getElementById('qam-details');
-  const elT = document.getElementById('qam-title');
-  const elFormA = document.getElementById('qam-form-accept');
-  const elFormI = document.getElementById('qam-form-ignore');
-  const elFormE = document.getElementById('qam-form-edit');
-  
-  document.getElementById('qam-id').value = id;
-  document.getElementById('qam-type').value = type;
-  document.getElementById('qam-err').textContent = '';
-  
-  [elFormA, elFormI, elFormE].forEach(f=>f.classList.add('hidden'));
-
-  if(type==='accept' || type==='ignore'){
-    const r = reqs.find(x=>x.id===id); if(!r) return;
-    elT.textContent = type==='accept'?'APPROVE REQUEST':'IGNORE REQUEST';
-    elD.innerHTML = `<div class="info-row"><span>College</span><span>${r.collegeName}</span></div>
-                    <div class="info-row"><span>Username</span><span>${r.username}</span></div>`;
-    if(type==='accept') elFormA.classList.remove('hidden');
-    else elFormI.classList.remove('hidden');
-  } else if(type==='edit'){
-    const m = managed.find(x=>x.quizId===id); if(!m) return;
-    elT.textContent = 'EDIT MANAGED SESSION';
-    elD.innerHTML = `<div class="info-row"><span>Quiz ID</span><span class="text-gold">${m.quizId}</span></div>`;
-    document.getElementById('qam-college').value = m.collegeName;
-    document.getElementById('qam-code').value = m.collegeCode;
-    if(m.expiry) document.getElementById('qam-expiry-edit').value = new Date(m.expiry - (new Date().getTimezoneOffset()*60000)).toISOString().slice(0,16);
-    document.getElementById('qam-status').value = m.status;
-    elFormE.classList.remove('hidden');
-  }
-  
-  openModal('modal-quiz-action');
-}
-
-function submitQuizAction(){
-  const id = document.getElementById('qam-id').value;
-  const type = document.getElementById('qam-type').value;
-  const err = document.getElementById('qam-err');
-  
-  if(type==='accept'){
-    const expiryStr = document.getElementById('qam-expiry').value;
-    if(!expiryStr){ err.textContent='Please select an expiration time.'; return; }
-    const expiry = new Date(expiryStr).getTime();
-    actionAccept(id, expiry);
-  } else if(type==='ignore'){
-    const reason = document.getElementById('qam-reason').value.trim();
-    if(!reason){ err.textContent='Reason is required.'; return; }
-    actionIgnore(id, reason);
-  } else if(type==='edit'){
-    const collegeName = document.getElementById('qam-college').value.trim();
-    const collegeCode = document.getElementById('qam-code').value.trim();
-    const expiryStr = document.getElementById('qam-expiry-edit').value;
-    const status = document.getElementById('qam-status').value;
-    if(!collegeName || !collegeCode){ err.textContent='College info required.'; return; }
-    actionEdit(id, { collegeName, collegeCode, expiry: expiryStr?new Date(expiryStr).getTime():null, status });
-  }
-}
-
-function actionAccept(reqId, expiry){
-  const reqs = Store.getQuizRequests();
-  const idx = reqs.findIndex(x=>x.id===reqId); if(idx===-1) return;
-  const r = reqs[idx];
-  
-  // 1. Mark request as accepted
-  r.status = 'accepted';
-  Store.saveQuizRequests(reqs);
-  
-  // 2. Generate Quiz ID
-  const quizId = Store.generateQuizId();
-  const adminId = genId();
-
-  // 3. Create Admin user with Quiz ID link
-  Store.addUser({
-    id: adminId,
-    name: r.collegeName + ' Admin',
-    roll: r.collegeCode,
-    college: r.collegeName, // Added for backend institutional isolation
-    username: r.username,
-    password: r.password,
-    role: 'admin',
-    currentQuizId: quizId,
-    registeredAt: Date.now()
-  });
-  
-  // 4. Add to Managed
-  Store.addManagedQuiz({
-    quizId,
-    adminId,
-    collegeName: r.collegeName,
-    collegeCode: r.collegeCode,
-    expiry,
-    status: 'active'
-  });
-  
-  Store.addActivity(`Quiz <strong>${quizId}</strong> approved for <strong>${r.collegeName}</strong>`,'success');
-  toast(`Approved! Generated Quiz ID: ${quizId}`, 'success');
-  closeModal('modal-quiz-action');
-  renderRequests();
-}
-
-function actionIgnore(reqId, reason){
-  const reqs = Store.getQuizRequests();
-  const r = reqs.find(x=>x.id===reqId); if(!r) return;
-  r.status = 'ignored';
-  r.reason = reason;
-  Store.saveQuizRequests(reqs);
-  Store.addActivity(`Quiz request from <strong>${r.collegeName}</strong> ignored: ${reason}`,'warning');
-  toast('Request ignored','warning');
-  closeModal('modal-quiz-action');
-  renderRequests();
-}
-
-function actionEdit(quizId, patch){
-  const managed = Store.getManagedQuizzes();
-  const m = managed.find(x=>x.quizId===quizId); if(!m) return;
-  Object.assign(m, patch);
-  Store.saveManagedQuizzes(managed);
-  toast('Session updated','success');
-  closeModal('modal-quiz-action');
-  renderManaged();
-}
-
-function removeManagedQuiz(quizId){
-  customConfirm(`Remove session <strong>${quizId}</strong>?<br>This will stop the session but keep current data.`, '🗑️', () => {
-    Store.saveManagedQuizzes(Store.getManagedQuizzes().filter(x=>x.quizId!==quizId));
-    toast('Session removed','warning');
-    renderManaged();
-  });
-}
-
-// ─── REPORTS ──────────────────────────────────────────────────
-function getConsolidatedReportData(){
-  const managed = Store.getManagedQuizzes();
-  const users = Store.getUsers();
-  
-  return managed.map(m => {
-    const qid = m.quizId;
-    const quizState = load(`${KEYS.QUIZ}_${qid}`, DEFAULT_QUIZ);
-    const teams = load(`${KEYS.TEAMS}_${qid}`, []);
-    const rounds = load(`${KEYS.ROUNDS}_${qid}`, []);
-    const questions = load(`${KEYS.QUESTIONS}_${qid}`, []);
-    
-    // Find Administrative context
-    const adminUser = users.find(u => u.id === m.adminId);
-    const adminName = adminUser ? adminUser.name : 'Unknown';
-    
-    // Calculate Winner
-    const sortedTeams = [...teams].sort((a,b) => (b.score||0) - (a.score||0));
-    const winner = sortedTeams.length ? sortedTeams[0] : null;
-    
-    return {
-      quizId: qid,
-      admin: adminName,
-      college: m.collegeName,
-      status: quizState.status,
-      teamCount: teams.length,
-      roundCount: rounds.length,
-      questionCount: questions.length,
-      winnerName: winner ? winner.name : 'N/A',
-      winnerScore: winner ? (winner.score || 0) : 0
-    };
-  });
-}
-
-function renderReports(){
-  const data = getConsolidatedReportData();
-  const tbody = document.getElementById('reports-body');
-  if(!tbody) return;
-  
-  if(!data.length){
-    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted p-12">No quiz data found to report.</td></tr>';
-    return;
-  }
-  
-  tbody.innerHTML = data.map(r => `
-    <tr>
-      <td class="font-title text-gold text-sm">${r.quizId}</td>
-      <td>
-        <div class="font-title text-xs text-white">${r.admin.toUpperCase()}</div>
-        <div class="text-xs text-muted">${r.college}</div>
-      </td>
-      <td class="text-center"><span class="badge badge-cyan">${r.teamCount}</span></td>
-      <td class="text-center"><span class="badge badge-purple">${r.roundCount}</span></td>
-      <td class="text-center"><span class="badge badge-gold">${r.questionCount}</span></td>
-      <td><span class="badge ${r.status==='finished'?'badge-green':'badge-gray'}">${r.status.toUpperCase()}</span></td>
-      <td class="text-cyan"><strong>${r.winnerName}</strong></td>
-      <td class="text-green font-title">${r.winnerScore}</td>
-      <td>
-        <button class="btn-icon" onclick="downloadIndividualReport('${r.quizId}')" title="Summary CSV">📊</button>
-        <button class="btn-icon" onclick="downloadDetailedCSV('${r.quizId}')" title="Detailed Grid CSV" style="color:var(--purple)">📑</button>
-      </td>
-    </tr>
-  `).join('');
-}
-
-function downloadIndividualReport(quizId){
-  const data = getConsolidatedReportData().find(r => r.quizId === quizId);
-  if(!data){ toast('No data for this quiz', 'error'); return; }
-  
-  const headers = ['METRIC', 'VALUE'];
-  const rows = [
-    ['QUIZ ID', data.quizId],
-    ['ADMIN', data.admin],
-    ['COLLEGE', data.college],
-    ['STATUS', data.status.toUpperCase()],
-    ['TOTAL TEAMS', data.teamCount],
-    ['TOTAL ROUNDS', data.roundCount],
-    ['TOTAL QUESTIONS', data.questionCount],
-    ['WINNER NAME', data.winnerName],
-    ['WINNER SCORE', data.winnerScore]
-  ];
-  
-  // Also add detailed team scores
-  const teams = Store.getTeams(quizId);
-  if(teams.length){
-    rows.push(['---', '---']);
-    rows.push(['TEAM NAME', 'SCORE']);
-    teams.forEach(t => {
-      rows.push([t.name, t.score || 0]);
-    });
-  }
-
-  const csvContent = [
-    headers.join(','),
-    ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
-  ].join('\n');
-  
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.setAttribute('href', url);
-  link.setAttribute('download', `Quiz_Report_${quizId}_${new Date().toISOString().slice(0,10)}.csv`);
-  link.style.visibility = 'hidden';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  toast('Individual report downloaded!', 'success');
-}
-
-function downloadDetailedCSV(quizId) {
-  const ps = Store.getParticipants(quizId);
-  const qs = Store.getQuestions(quizId);
-  if(!ps.length) { toast('No participant data for this quiz.', 'warning'); return; }
-
-  let csv = "Roll Number,Name," + qs.map((_, i) => `Q${i+1}`).join(",") + ",Total,Percentage\n";
-  ps.forEach(p => {
-    let total = 0;
-    const ans = p.answers || {};
-    const row = [p.roll || p.username, p.name];
-    qs.forEach((q, i) => {
-      const res = ans[i];
-      if(res && res.ok) total++;
-      row.push(res ? (res.ok ? "1" : "0") : "—");
-    });
-    row.push(total);
-    row.push(qs.length ? ((total / qs.length) * 100).toFixed(2) + "%" : "0%");
-    csv += row.join(",") + "\n";
-  });
-
-  const blob = new Blob([csv], { type: 'text/csv' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `detailed_report_${quizId}_${Date.now()}.csv`;
-  a.click();
-  toast('Detailed report exported!', 'success');
-}
-
-function downloadFullReport(){
-  const data = getConsolidatedReportData();
-  if(!data.length){ toast('No data to export', 'error'); return; }
-  
-  const headers = ['QUIZ ID', 'ADMIN', 'COLLEGE', 'STATUS', 'TEAMS', 'ROUNDS', 'QUESTIONS', 'WINNER', 'WINNER SCORE'];
-  const csvContent = [
-    headers.join(','),
-    ...data.map(r => [
-      r.quizId,
-      `"${r.admin}"`,
-      `"${r.college}"`,
-      r.status.toUpperCase(),
-      r.teamCount,
-      r.roundCount,
-      r.questionCount,
-      `"${r.winnerName}"`,
-      r.winnerScore
-    ].join(','))
-  ].join('\n');
-  
-  const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.setAttribute('href', url);
-  link.setAttribute('download', `Consolidated_Quiz_Report_${new Date().toISOString().slice(0,10)}.csv`);
-  link.style.visibility = 'hidden';
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  toast('Report downloaded!', 'success');
-}
-
-document.querySelectorAll('.modal-bg').forEach(m=>m.addEventListener('click',e=>{ if(e.target===m) m.classList.remove('open'); }));
-
-// Show ROOT Unique ID for testing
-(function(){
-  const rootId = 'SA-' + Math.random().toString(36).substr(2, 4).toUpperCase();
-  const el = document.getElementById('sb-root-id');
-  if(el) el.textContent = `ROOT ID: ${rootId}`;
-})();
-
-function renderCommandTargets(){
-  const teams = Store.getActiveTeams();
-  const sel = document.getElementById('cmd-target-team');
-  if(!sel) return;
-  const cur = sel.value;
-  sel.innerHTML = '<option value="">All Active Teams</option>' + 
-    teams.map(t => `<option value="${t.id}" ${t.id===cur?'selected':''}>T${t.teamNumber}: ${t.name}</option>`).join('');
-}
-
-function sendGlobalMsg(){
-  const msg = document.getElementById('cmd-broadcast-msg').value.trim();
-  if(!msg) return;
-  window.socket.emit('admin_cmd', { type: 'msg', target: 'all', msg });
-  document.getElementById('cmd-broadcast-msg').value = '';
-  toast('Global message sent', 'success');
-  Store.addActivity(`📢 Superadmin Broadcast: ${msg}`, 'info');
-}
-
-function cmdAction(action){
-  const target = document.getElementById('cmd-target-team').value;
-  const msgInput = document.getElementById('cmd-broadcast-msg');
-  const msg = msgInput.value.trim();
-  
-  if(action === 'hold'){
-    const quiz = Store.getQuiz();
-    if(!quiz.holdStatus) quiz.holdStatus = {};
-    const currentStatus = !!quiz.holdStatus[target];
-    quiz.holdStatus[target] = !currentStatus;
-    Store.saveQuiz(quiz);
-    window.socket.emit('admin_cmd', { type: 'hold', target, status: !currentStatus });
-    toast(`${target ? 'Team' : 'All teams'} ${!currentStatus ? 'HELD' : 'RELEASED'}`, 'warning');
-    Store.addActivity(`🛑 Superadmin ${!currentStatus ? 'held' : 'released'} ${target || 'all teams'}`, 'warning');
-    return;
-  }
-
-  if(!msg && (action === 'warn' || action === 'msg')) {
-    toast('Please enter a message first', 'error');
-    return;
-  }
-
-  window.socket.emit('admin_cmd', { type: action, target: target || 'all', msg });
-  msgInput.value = '';
-  toast(`${action.toUpperCase()} sent`, 'success');
-  Store.addActivity(`⚠️ Superadmin ${action}: ${msg} (Target: ${target || 'All'})`, 'warning');
-}
-
-// ─── MIC BROADCAST (PTT) ─────────────────────────────────────
-let mediaRecorder = null;
-let audioChunks = [];
-
-async function startMicBroadcast(){
-  try {
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    mediaRecorder = new MediaRecorder(stream);
-    audioChunks = [];
-    
-    mediaRecorder.ondataavailable = e => { if(e.data.size > 0) audioChunks.push(e.data); };
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      const target = document.getElementById('cmd-target-team')?.value || 'all';
-      const reader = new FileReader();
-      reader.onload = () => {
-        window.socket.emit('admin_audio', { audio: reader.result, target });
-      };
-      reader.readAsDataURL(blob);
-      stream.getTracks().forEach(t => t.stop());
-    };
-    
-    mediaRecorder.start();
-    document.getElementById('btn-admin-mic').style.boxShadow = '0 0 15px var(--red)';
-    document.getElementById('btn-admin-mic').style.transform = 'scale(1.2)';
-    Store.addActivity('🎤 Superadmin speaking...', 'warning');
-  } catch(e) {
-    toast('Mic error: ' + e.message, 'error');
-  }
-}
-
-function stopMicBroadcast(){
-  if(mediaRecorder && mediaRecorder.state !== 'inactive'){
-    mediaRecorder.stop();
-    document.getElementById('btn-admin-mic').style.boxShadow = 'none';
-    document.getElementById('btn-admin-mic').style.transform = 'scale(1)';
-  }
-}
-
-
-function adminLogout(){ 
+function adminLogout(){
   const sess = Store.getSession();
-  if(sess && sess.rid) Store.updateLogout(sess.rid);
-  Store.clearSession(); 
-  window.location.href='/index.html'; 
+  if(sess.rid) Store.updateLogout(sess.rid);
+  Store.clearSession();
+  window.location.href='/index.html';
 }
 
-// ─── ADMIN PERFORMANCE ANALYTICS ──────────────────────────────
-async function renderAdminPerf(){
-  const el = document.getElementById('admin-perf-body');
-  if(!el) return;
-  el.innerHTML = '<tr><td colspan="6" class="p-12 text-center">AGGREGATING ANALYTICS...</td></tr>';
-  
-  try {
-    const resp = await fetch('/api/admin-perf');
-    const res = await resp.json();
-    if(res.success && res.data){
-      if(!res.data.length){
-        el.innerHTML = '<tr><td colspan="6" class="p-12 text-center text-muted">No quiz activity data found to generate reports.</td></tr>';
-        return;
-      }
-      el.innerHTML = res.data.map(a => `
-        <tr>
-          <td><strong>${a.name}</strong></td>
-          <td><span class="badge badge-purple">${a.college}</span></td>
-          <td class="text-center"><strong>${a.quizCount}</strong></td>
-          <td class="text-center">${a.totalTeams}</td>
-          <td class="text-muted text-xs">${new Date(a.lastActivity).toLocaleString()}</td>
-          <td><button class="btn-sm btn-cyan" onclick="viewAdminHistory('${a.name}')">HISTORY</button></td>
-        </tr>
-      `).join('');
-    } else {
-      el.innerHTML = '<tr><td colspan="6" class="p-12 text-center text-red">Server error.</td></tr>';
-    }
-  } catch(e){
-    el.innerHTML = '<tr><td colspan="6" class="p-12 text-center text-red">Error connecting to server.</td></tr>';
-  }
-}
+function openGuidanceModal(){ openModal('modal-guidance'); }
 
-function viewAdminHistory(name){
-  toast(`Loading conduct history for ${name}...`, 'info');
-  goSection('reports');
-}
-
-function exportAdminPerf(){
-  toast('Admin Performance CSV Exported!', 'success');
-}
- 
-
-
-// AI QUESTION GENERATOR LOGIC
-
+// ─── AI QUESTION GENERATOR ───────────────────────────────────
 function openAIGenModal(){
-  const managed = Store.getManagedQuizzes();
-  const targetSel = document.getElementById('ai-target-quiz');
-  if(targetSel){
-    targetSel.innerHTML = '<option value="global">GLOBAL BANK (Shared)</option>' + 
-      managed.map(q => `<option value="${q.quizId}">${q.quizId}: ${q.collegeName || 'Admin'}</option>`).join('');
-  }
-  onAITargetChange();
+  const rounds = Store.getRounds();
+  const sel = document.getElementById('ai-round');
+  sel.innerHTML = '<option value="">Choose a round...</option>' + 
+    rounds.map((r, i) => `<option value="${i}">R${i+1}: ${r.name}</option>`).join('');
+  
   document.getElementById('ai-preview-area').classList.add('hidden');
-  document.getElementById('ai-preview-list').innerHTML = '';
+  document.getElementById('ai-loading').classList.add('hidden');
+  document.getElementById('ai-err').textContent = '';
+  aiGeneratedResults = [];
   openModal('modal-ai-gen');
 }
 
-function onAITargetChange(){
-  const target = document.getElementById('ai-target-quiz').value;
-  const roundSel = document.getElementById('ai-round');
-  const rounds = (target === 'global') ? [] : (load(`sq_rounds_${target}`, []));
-  
-  if(roundSel) {
-    if(!rounds.length){
-      roundSel.innerHTML = '<option value="">BANK (No rounds in this quiz)</option>';
-    } else {
-      roundSel.innerHTML = '<option value="">BANK (Manual Assignment)</option>' + 
-        rounds.map((r,i)=>`<option value="${i}">R${r.roundNumber||i+1}: ${r.name}</option>`).join('');
-    }
-  }
-}
-
-async function generateAIQuestions() {
+async function generateAIQuestions(){
   const topic = document.getElementById('ai-topic').value.trim();
   const count = document.getElementById('ai-count').value;
   const difficulty = document.getElementById('ai-difficulty').value;
@@ -1886,48 +1469,40 @@ async function generateAIQuestions() {
   const loader = document.getElementById('ai-loading');
   const preview = document.getElementById('ai-preview-area');
   
-  if(!topic) { err.textContent = 'Please enter a subject/topic.'; return; }
+  if(!topic){ err.textContent = 'Please enter a topic.'; return; }
   
   err.textContent = '';
   btn.disabled = true;
   loader.classList.remove('hidden');
   preview.classList.add('hidden');
-
+  
   try {
-    const response = await fetch('/api/ai/generate', {
+    const resp = await fetch('/api/ai/generate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ topic, count, difficulty })
     });
-    
-    // Ensure we are getting JSON back
-    const contentType = response.headers.get('content-type') || '';
+
+    const contentType = resp.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
-      const txt = await response.text();
-      console.error('[AI] Non-JSON response:', txt.substring(0, 200));
-      throw new Error('Server returned HTML instead of JSON. Check backend logs.');
+      throw new Error('Server returned an invalid response. please check your Groq API key.');
     }
 
-    const res = await response.json();
-    if(!res.success) throw new Error(res.message);
+    const res = await resp.json();
+    if(!res.success){ throw new Error(res.message || 'Generation failed'); }
     
-    // VERIFY data structure from server
-    if (!res.questions || !Array.isArray(res.questions)) {
-       throw new Error('Invalid data format received from AI server.');
-    }
-
-    aiQuestions = res.questions;
+    aiGeneratedResults = res.questions;
     renderAIPreview();
     preview.classList.remove('hidden');
-    // Scroll to preview
+    // Force scroll to preview
     setTimeout(() => preview.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
-    toast(`Successfully generated ${aiQuestions.length} questions!`, 'success');
+    toast(`Successfully generated ${aiGeneratedResults.length} questions!`,'success');
   } catch(e) {
-    err.textContent = 'AI Error: ' + e.message;
-    toast('AI Generation Failed', 'error');
+    err.textContent = 'AI Generation Error: ' + e.message;
+    toast('AI Generation Failed','error');
   } finally {
-    loader.classList.add('hidden');
     btn.disabled = false;
+    loader.classList.add('hidden');
   }
 }
 
@@ -1935,7 +1510,7 @@ function renderAIPreview(){
   const list = document.getElementById('ai-preview-list');
   const preview = document.getElementById('ai-preview-area');
   
-  if(!aiQuestions || !aiQuestions.length){
+  if(!aiGeneratedResults || !aiGeneratedResults.length){
     list.innerHTML = '<div class="empty-state">No questions generated. Try a different topic.</div>';
     return;
   }
@@ -1949,7 +1524,7 @@ function renderAIPreview(){
     "Hard (Advanced)": {lbl:'HARD', cls:'badge-red'}
   };
   
-  list.innerHTML = aiQuestions.map((q, i) => {
+  list.innerHTML = aiGeneratedResults.map((q, i) => {
     const dAttr = q.difficulty || document.getElementById('ai-difficulty').value;
     const d = diffMap[dAttr] || diffMap.medium;
     return `<div class="ai-q-card" style="display:block !important; visibility:visible !important; opacity:1 !important">
@@ -2024,33 +1599,18 @@ function resetAllQuestions(){
   });
 }
 
-
 function addAllAIToBank(){
-  const target = document.getElementById('ai-target-quiz').value;
   const roundIdx = document.getElementById('ai-round').value;
+  const questions = Store.getQuestions();
+  const rounds = Store.getRounds();
   
-  // Custom partition logic for Superadmin targeting
-  const qKey = (target === 'global') ? 'sq_questions' : `sq_questions_${target}`;
-  const rKey = (target === 'global') ? 'sq_rounds' : `sq_rounds_${target}`;
-  
-  let questions = load(qKey, []);
-  let rounds = load(rKey, []);
-  
-  let insertIdx = questions.length;
+  let insertPos = questions.length;
   if(roundIdx !== ''){
-    const ri = parseInt(roundIdx);
-    const range = getRoundQRange(rounds, ri);
-    insertIdx = range.end + 1; 
+    const range = getRoundQRange(rounds, parseInt(roundIdx));
+    insertPos = range.end + 1;
   }
   
-  // Double check global aiQuestions
-  if(!aiQuestions || !aiQuestions.length){
-    toast('No questions found to add!', 'error');
-    return;
-  }
-
-  // Create proper question objects
-  const toAdd = aiQuestions.map(q => ({
+  const formatted = aiGeneratedResults.map(q => ({
     id: 'Q_' + Math.random().toString(36).substr(2, 9).toUpperCase(),
     text: q.text,
     options: q.options,
@@ -2059,64 +1619,434 @@ function addAllAIToBank(){
     explanation: q.explanation || '',
     difficulty: q.difficulty || document.getElementById('ai-difficulty').value
   }));
-
-  questions.splice(insertIdx, 0, ...toAdd);
-  save(qKey, questions);
   
-  toast(`Successfully added ${toAdd.length} questions to ${target}!`, 'success');
-  Store.addActivity(`🤖 AI Import: Added ${toAdd.length} questions for topic "${document.getElementById('ai-topic').value}" to ${target}`, 'success', true);
+  questions.splice(insertPos, 0, ...formatted);
+  Store.saveQuestions(questions);
+  
+  toast(`Added ${formatted.length} questions to bank!`, 'success');
+  Store.addActivity(`Added ${formatted.length} AI-generated questions about "${document.getElementById('ai-topic').value}"`, 'success');
   closeModal('modal-ai-gen');
-  if(target === (Store.getSession()?.quizId || 'global')){
-    if(typeof renderQuestions === 'function') renderQuestions();
+  renderQuestions();
+}
+
+// ─── LIVE FEED ────────────────────────────────────────────────
+let feedWindow = null;
+function openLiveFeed(){
+  if(feedWindow && !feedWindow.closed){
+    feedWindow.focus();
+  } else {
+    feedWindow = window.open('/live-feed.html', 'QuizLiveFeed', 'width=1280,height=720');
   }
 }
 
-function openLiveFeed(){ window.open('/live-feed.html', '_blank'); }
-
-function announceWinner(){
-  const teams = Store.getActiveTeams().sort((a,b) => (b.score||0)-(a.score||0));
-  if(!teams.length) return toast('No teams to announce!', 'error');
-  const winner = teams[0];
-  window.socket.emit('admin_cmd', { type: 'winner', target: 'all', teamName: winner.name, score: winner.score });
-  toast(`Winner Announced: ${winner.name}!`, 'success');
-  Store.addActivity(`🏆 FINAL WINNER ANNOUNCED: ${winner.name} (${winner.score} pts)`, 'success');
+function sendToLiveFeed(cmd, data){
+  if(feedWindow && !feedWindow.closed){
+    feedWindow.postMessage({ cmd, data }, '*');
+  }
 }
 
-// ─── FINAL INITIALIZATION ─────────────────────────────────────
-function customConfirm(msg, icon, onYes){
-  const elMsg = document.getElementById('conf-msg');
-  const elIcon = document.getElementById('conf-icon');
-  if(elMsg) elMsg.innerHTML = msg;
-  if(elIcon) elIcon.textContent = icon || '❓';
-  const btn = document.getElementById('btn-conf-yes');
-  if(btn) btn.onclick = () => { onYes(); closeModal('modal-confirm'); };
-  openModal('modal-confirm');
-}
-
-// Start app
+// ─── INIT + AUTO REFRESH ──────────────────────────────────────
 goSection('dashboard');
 renderOptFields();
 
-// Global tick for real-time updates
+// Real-time refresh every 1 second for active sections
 setInterval(()=>{
-  if(currentSec === 'dashboard') renderDashboard();
-  if(currentSec === 'control'){
+  if(currentSec==='dashboard'){ renderDashboard(); }
+  if(currentSec==='control'){
+    // Always fetch fresh quiz state
     renderTeamAnswers();
     tickAdminTimer();
     renderScoreboard('c-scores');
     renderLoginStatusPanel();
-    const quiz = Store.getQuiz();
-    const statusEl = document.getElementById('c-status-txt');
-    if(statusEl) {
-      const sLabel={idle:'IDLE',round_intro:`ROUND ${quiz.currentRoundIdx+1} INTRO`,running:`ROUND ${quiz.currentRoundIdx+1} RUNNING`,paused:'PAUSED',participant_turn:'PARTICIPANTS ANSWERING',round_end:`ROUND ${quiz.currentRoundIdx+1} ENDED`,finished:'FINISHED'};
-      statusEl.textContent = sLabel[quiz.status]||quiz.status.toUpperCase();
+    // Re-render current question if status changed
+    const quiz=Store.getQuiz();
+    const statusEl=document.getElementById('c-status-txt');
+    const sLabel={idle:'IDLE',round_intro:`ROUND ${quiz.currentRoundIdx+1} INTRO`,running:`ROUND ${quiz.currentRoundIdx+1} RUNNING`,paused:'PAUSED',participant_turn:'PARTICIPANTS ANSWERING',round_end:`ROUND ${quiz.currentRoundIdx+1} ENDED`,finished:'FINISHED'};
+    if(statusEl) statusEl.textContent=sLabel[quiz.status]||quiz.status.toUpperCase();
+    // Update question view directly
+    const qv=document.getElementById('c-question-view');
+    const qb=document.getElementById('c-q-badge');
+    const teams=Store.getActiveTeams(), questions=Store.getQuestions(), rounds=Store.getRounds();
+    const s=quiz.status;
+    if((s==='running'||s==='paused'||s==='participant_turn')&&qv&&qb){
+      const q=questions[quiz.globalQIdx];
+      if(q){
+        const range=getRoundQRange(rounds,quiz.currentRoundIdx);
+        qb.innerHTML=`<span class="badge badge-cyan">Q${quiz.currentQInRound+1} / ${range.count}</span>`;
+        const activeTeamName=s==='participant_turn'?'📢 PARTICIPANTS':(teams[quiz.currentTeamIdx]?.name||'?');
+        qv.innerHTML=`<div class="q-now-label text-xs font-title text-muted mb-1">NOW: <span class="text-gold">${activeTeamName}</span></div>
+          <div class="q-text" style="font-size:14px;margin-bottom:10px">${q.text}</div>
+          <div class="opts-grid">${q.options.map((o,i)=>`<div class="opt-view ${q.correct.includes(i)?'opt-correct':''}"><span class="opt-lbl-sm">${String.fromCharCode(65+i)}</span>${o}${q.correct.includes(i)?'<span class="ml-auto text-green">✓</span>':''}</div>`).join('')}</div>`;
+      }
     }
   }
-}, 1000);
+},1000);
 
-// Root ID Display
+onUpdate(({key})=>{
+  const isK = (k) => key === k || key.startsWith(k + '_');
+  if(isK(KEYS.QUIZ)||isK(KEYS.TEAMS)||isK(KEYS.LOGIN_STATUS)){ 
+    if(currentSec==='control') renderControl(); 
+    if(currentSec==='dashboard') renderDashboard(); 
+    RenderEngine.quizMap('quiz-map-container');
+  }
+  if(isK(KEYS.USERS) || isK(KEYS.MANAGED_QUIZZES)) {
+    initAdminInfo();
+    if(currentSec==='users') renderUsers();
+  }
+  if(isK(KEYS.ACTIVITY)) renderRecentActivity();
+  if(isK(KEYS.ALERTS)) renderAlertsBadge();
+  if(key.startsWith('sq_cam_')){ 
+    if(currentSec==='camera') renderCamera(); 
+    if(currentSec==='dashboard') renderDashboard();
+    if(currentSec==='control') renderLoginStatusPanel();
+  }
+});
+
+document.querySelectorAll('.modal-bg').forEach(m=>m.addEventListener('click',e=>{ if(e.target===m) m.classList.remove('open'); }));
+
+// Show Quiz ID in sidebar
 (function(){
-  const rootId = 'SA-' + Math.random().toString(36).substr(2, 4).toUpperCase();
-  const el = document.getElementById('sb-root-id');
-  if(el) el.textContent = `ROOT ID: ${rootId}`;
+  const s = Store.getSession();
+  const el = document.getElementById('sb-quiz-id');
+  if(el){
+    if(s && s.quizId){
+      el.textContent = `QUIZ ID: ${s.quizId}`;
+      el.style.display = 'block';
+    } else {
+      el.textContent = 'GLOBAL SESSION';
+      el.style.display = 'block';
+    }
+  }
 })();
+// ─── REPORTS & ANALYTICS ───────────────────────────────────────
+let currentReportData = null;
+
+async function generateReport(type) {
+  const teams = Store.getActiveTeams();
+  const rounds = Store.getRounds();
+  const questions = Store.getQuestions();
+  const participants = Store.getParticipants();
+  const quiz = Store.getQuiz();
+  const reportView = document.getElementById('report-view');
+  const badge = document.getElementById('report-type-badge');
+  const actions = document.getElementById('report-actions');
+
+  if (!teams.length && type !== 'individual') {
+    reportView.innerHTML = '<div class="text-center text-muted py-5">No active teams found to generate report.</div>';
+    return;
+  }
+
+  currentReportData = {
+    id: 'REP_' + Math.random().toString(36).substr(2, 9).toUpperCase(),
+    quizId: Store.getSession().quizId || 'GLOBAL',
+    type: type,
+    timestamp: Date.now(),
+    data: {
+      teams: teams.map(t => ({
+        name: t.name,
+        teamNumber: t.teamNumber,
+        score: t.score,
+        correctCount: t.correctCount,
+        roundScores: t.roundScores || {}
+      })),
+      rounds: rounds.map(r => ({ id: r.id, name: r.name, num: r.roundNumber })),
+      participants: participants.map(p => ({
+        id: p.id,
+        name: p.name,
+        roll: p.roll,
+        score: p.score,
+        correctCount: p.correctCount,
+        answers: p.answers || {}
+      })),
+      questionCount: questions.length,
+      quizStatus: quiz.status
+    }
+  };
+
+  badge.innerHTML = `<span class="badge ${type === 'summary' ? 'badge-cyan' : 'badge-gold'}">${type.toUpperCase()}</span>`;
+  actions.classList.remove('hidden');
+  actions.querySelector('.btn-green').classList.remove('hidden');
+
+  if (type === 'summary') {
+    // DETAILED SUMMARY
+    let html = `<table class="full-w text-sm">
+      <thead>
+        <tr style="text-align:left; border-bottom:1px solid var(--border)">
+          <th class="p-8">Team</th>
+          <th class="p-8">Total Score</th>
+          <th class="p-8">Correct</th>
+          ${rounds.map(r => `<th class="p-8">${r.name}</th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>`;
+    
+    teams.sort((a,b) => b.score - a.score).forEach(t => {
+      html += `<tr style="border-bottom:1px solid var(--border)">
+        <td class="p-8"><strong>${t.name}</strong> <small class="text-muted">(T${t.teamNumber})</small></td>
+        <td class="p-8"><span class="text-gold font-title">${t.score}</span></td>
+        <td class="p-8">${t.correctCount || 0}</td>
+        ${rounds.map(r => {
+          const rs = (t.roundScores || {})[r.id] || 0;
+          return `<td class="p-8">${rs}</td>`;
+        }).join('')}
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+    reportView.innerHTML = html;
+  } else {
+    // OVERALL WINNERS
+    const sorted = [...teams].sort((a,b) => b.score - a.score);
+    const winners = sorted.slice(0, 3);
+    
+    let html = `<div style="display:flex; justify-content:center; gap:15px; margin-bottom:20px; text-align:center">`;
+    winners.forEach((t, i) => {
+      const colors = ['#f0b429', '#9e9e9e', '#8d6e63']; // Gold, Silver, Bronze
+      html += `<div style="padding:15px; border:2px solid ${colors[i]}; border-radius:10px; min-width:120px; background:rgba(255,255,255,0.02)">
+        <div style="font-size:24px">${['🥇','🥈','🥉'][i]}</div>
+        <div class="font-title text-gold" style="font-size:16px">${t.name}</div>
+        <div class="text-xs text-muted">RANK ${i+1}</div>
+        <div class="font-title mt-1" style="font-size:20px">${t.score}</div>
+      </div>`;
+    });
+    html += `</div>`;
+    
+    html += `<div class="card p-8">
+      <div class="card-title mb-2">COMPLETE STANDINGS</div>
+      <table class="full-w text-sm">
+        ${sorted.map((t, i) => `
+          <tr style="border-bottom:1px solid var(--border)">
+            <td class="p-8 text-muted" style="width:40px">#${i+1}</td>
+            <td class="p-8"><strong>${t.name}</strong></td>
+            <td class="p-8 text-right font-title text-gold">${t.score} pts</td>
+          </tr>
+        `).join('')}
+      </table>
+    </div>`;
+    reportView.innerHTML = html;
+  }
+}
+
+async function saveReportToDB() {
+  if (!currentReportData) return;
+  const btn = document.querySelector('#report-actions button');
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'SAVING...';
+
+  try {
+    const sess = Store.getSession();
+    const payload = {
+      ...currentReportData,
+      adminName: sess.name,
+      college: sess.college
+    };
+    const resp = await fetch('/api/reports', {
+      method: 'POST',
+      headers: { 
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${Store.getToken()}`
+      },
+      body: JSON.stringify(payload)
+    });
+    const res = await resp.json();
+    if (res.success) {
+      toast('Report saved to database!', 'success');
+      loadSavedReports();
+
+    } else {
+      toast('Failed to save report: ' + res.message, 'error');
+    }
+  } catch (e) {
+    console.error(e);
+    toast('Server error while saving report', 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
+  }
+}
+
+async function loadSavedReports() {
+  const quizId = Store.getSession().quizId || 'GLOBAL';
+  const el = document.getElementById('saved-reports-list');
+  try {
+    const resp = await fetch(`/api/reports/${quizId}`);
+    const res = await resp.json();
+    if (res.success && res.reports) {
+      if (!res.reports.length) {
+        el.innerHTML = '<div class="text-muted text-xs">No saved reports found.</div>';
+        return;
+      }
+      el.innerHTML = res.reports.map(r => `
+        <div class="act-row" style="cursor:pointer" onclick="viewSavedReport(${JSON.stringify(r).replace(/"/g, '&quot;')})">
+          <div class="act-dot" style="background:${r.type==='summary'?'var(--cyan)':'var(--gold)'}"></div>
+          <div style="flex:1">
+            <div class="text-sm"><strong>${r.type.toUpperCase()} Report</strong></div>
+            <div class="text-xs text-muted">${new Date(r.timestamp).toLocaleString()}</div>
+          </div>
+          <button class="btn-sm btn-cyan" style="font-size:9px; padding:3px 6px">VIEW</button>
+        </div>
+      `).join('');
+    }
+  } catch (e) {
+    el.innerHTML = '<div class="text-red text-xs">Error loading reports.</div>';
+  }
+}
+
+function viewSavedReport(report) {
+  // Mocking the generation logic with saved data
+  const reportView = document.getElementById('report-view');
+  const badge = document.getElementById('report-type-badge');
+  const actions = document.getElementById('report-actions');
+  const saveBtn = actions.querySelector('.btn-green');
+  
+  badge.innerHTML = `<span class="badge ${report.type === 'summary' ? 'badge-cyan' : 'badge-gold'}">${report.type.toUpperCase()}</span>`;
+  actions.classList.remove('hidden');
+  saveBtn.classList.add('hidden'); // Hide save button for already saved reports
+  
+  const teams = report.data.teams;
+  const rounds = report.data.rounds;
+  const participants = report.data.participants;
+  const qCount = report.data.questionCount;
+
+  // Set as current for download
+  currentReportData = report;
+  
+  if (report.type === 'detailed' || report.type === 'individual') {
+    let html = `<div class="text-xs text-muted mb-4">Saved on ${new Date(report.timestamp).toLocaleString()}</div>
+    <div style="overflow-x:auto">
+      <table class="full-w text-sm report-grid">
+        <thead>
+          <tr>
+            <th>ROLL/NAME</th>
+            ${Array.from({length: qCount || 20}, (_, i) => `<th>Q${i+1}</th>`).join('')}
+            <th>TOTAL</th>
+          </tr>
+        </thead>
+        <tbody>`;
+    
+    (participants || []).forEach(p => {
+      let total = 0;
+      const ans = p.answers || {};
+      html += `<tr>
+        <td><strong>${p.roll || '—'}</strong><br><small>${p.name}</small></td>
+        ${Array.from({length: qCount || 20}, (_, i) => {
+          const res = ans[i];
+          const isOk = res && (res.ok || Array.isArray(res)); // Logic varies, but usually presence means attempted
+          if(isOk) total++;
+          return `<td>${res ? (isOk ? '<span class="text-green">✓</span>' : '<span class="text-red">✗</span>') : '—'}</td>`;
+        }).join('')}
+        <td><strong class="text-gold">${p.correctCount || total}</strong></td>
+      </tr>`;
+    });
+    html += `</tbody></table></div>`;
+    reportView.innerHTML = html;
+  } else if (report.type === 'summary') {
+    let html = `<div class="text-xs text-muted mb-2">Saved on ${new Date(report.timestamp).toLocaleString()}</div>
+    <table class="full-w text-sm">
+      <thead>
+        <tr style="text-align:left; border-bottom:1px solid var(--border)">
+          <th class="p-8">Team</th>
+          <th class="p-8">Total Score</th>
+          <th class="p-8">Correct</th>
+          ${rounds.map(r => `<th class="p-8">${r.name}</th>`).join('')}
+        </tr>
+      </thead>
+      <tbody>`;
+    teams.forEach(t => {
+      html += `<tr style="border-bottom:1px solid var(--border)">
+        <td class="p-8"><strong>${t.name}</strong> <small class="text-muted">(T${t.teamNumber})</small></td>
+        <td class="p-8"><span class="text-gold font-title">${t.score}</span></td>
+        <td class="p-8">${t.correctCount || 0}</td>
+        ${rounds.map(round => {
+          const rs = t.roundScores[round.id] || t.roundScores[round.name] || 0; 
+          return `<td class="p-8">${rs}</td>`;
+        }).join('')}
+      </tr>`;
+    });
+    html += `</tbody></table>`;
+    reportView.innerHTML = html;
+  } else {
+    // Overall view from saved data
+    const sorted = [...teams].sort((a,b) => b.score - a.score);
+    const winners = sorted.slice(0, 3);
+    let html = `<div class="text-xs text-muted mb-2">Saved on ${new Date(report.timestamp).toLocaleString()}</div>`;
+    html += `<div style="display:flex; justify-content:center; gap:15px; margin-bottom:20px; text-align:center">`;
+    winners.forEach((t, i) => {
+      const colors = ['#f0b429', '#9e9e9e', '#8d6e63'];
+      html += `<div style="padding:15px; border:2px solid ${colors[i]}; border-radius:10px; min-width:120px; background:rgba(255,255,255,0.02)">
+        <div style="font-size:24px">${['🥇','🥈','🥉'][i]}</div>
+        <div class="font-title text-gold" style="font-size:16px">${t.name}</div>
+        <div class="font-title mt-1" style="font-size:20px">${t.score}</div>
+      </div>`;
+    });
+    html += `</div>`;
+    html += `<div class="card p-8"><table class="full-w text-sm">${sorted.map((t,i)=>`<tr style="border-bottom:1px solid var(--border)"><td class="p-8 text-muted">#${i+1}</td><td class="p-8"><strong>${t.name}</strong></td><td class="p-8 text-right font-title text-gold">${t.score} pts</td></tr>`).join('')}</table></div>`;
+    reportView.innerHTML = html;
+  }
+}
+
+function downloadReport() {
+  if (!currentReportData) return;
+  const type = currentReportData.type;
+  const content = document.getElementById('report-view').innerHTML;
+  const title = `QUIZ_${type.toUpperCase()}_REPORT_${new Date(currentReportData.timestamp).toISOString().split('T')[0]}`;
+  
+  const css = `
+    body { font-family: sans-serif; padding: 40px; color: #333; background: #fff; }
+    h1 { color: #A349E5; text-align: center; }
+    table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+    th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
+    th { background: #f8f9fa; font-weight: bold; }
+    .badge { padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: bold; }
+    .badge-cyan { background: #e0f2fe; color: #0369a1; }
+    .badge-gold { background: #fef3c7; color: #92400e; }
+    .text-gold { color: #f0b429; font-weight: bold; }
+    .winner-box { display: flex; justify-content: center; gap: 20px; margin: 30px 0; }
+    .card { border: 1px solid #eee; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+  `;
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head><title>${title}</title><style>${css}</style></head>
+    <body>
+      <h1>${type.toUpperCase()} REPORT</h1>
+      <div style="text-align:center"><p>Quiz ID: ${currentReportData.quizId}</p><p>Generated on: ${new Date(currentReportData.timestamp).toLocaleString()}</p></div>
+      <hr>${content}
+    </body>
+    </html>
+  `;
+  
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = title + '.html'; a.click();
+}
+
+function exportCSV(){
+  if (!currentReportData) return;
+  const { type, data } = currentReportData;
+  let csv = "";
+
+  if(type === 'summary'){
+    csv = "Team Name,Team Number,Total Score,Correct Count\n";
+    data.teams.forEach(t => { csv += `"${t.name}",${t.teamNumber},${t.score},${t.correctCount}\n`; });
+  } else {
+    csv = "Roll Number,Name,Total Score,Correct Count\n";
+    const ps = data.participants || [];
+    ps.forEach(p => { csv += `"${p.roll || 'N/A'}","${p.name}",${p.score},${p.correctCount}\n`; });
+  }
+
+  const title = `QUIZ_${type.toUpperCase()}_REPORT_${Date.now()}.csv`;
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = title; a.click();
+  toast('CSV Export Successful!', 'success');
+}
+
+// Update goSection to handle reports (handled now in renderSec)
+// Removed previous override logic
+
+// End of Admin Script
+
