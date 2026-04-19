@@ -49,7 +49,7 @@ app.get('/team/:name', (req, res) => res.sendFile(path.join(staticDir, 'pages/te
 
 
 // ─── AUTHENTICATION API ──────────────────────────────────────
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { username, password, quizId } = req.body;
   const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
 
