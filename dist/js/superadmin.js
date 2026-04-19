@@ -1028,7 +1028,14 @@ function tickAdminTimer(){
     if(ptWrap) ptWrap.style.display='block';
     if(ptEl){ ptEl.textContent=rem; ptEl.className='timer-big'+(rem<=5?' danger':rem<=10?' warn':''); }
     if(ptBar){ ptBar.style.width=((rem/quiz.participantTimeLimit)*100)+'%'; ptBar.className='tbar'+(rem<=5?' tbar-danger':rem<=10?' tbar-warn':''); }
-    if(rem===0&&!quiz._participantTimerHandled){ const q2=Store.getQuiz(); q2._participantTimerHandled=true; Store.saveQuiz(q2); Store.addActivity('⏰ Participant time up → next question','warning'); advanceToNextQuestion(); renderControl(); }
+    if(rem===0 && !quiz._participantTimerHandled){ 
+       const q=Store.getQuiz(); 
+       if(q._participantTimerHandled) return;
+       q._participantTimerHandled=true; 
+       Store.saveQuiz(q); 
+       Store.addActivity('⏰ Participant time up → next question','warning'); 
+       advanceToNextQuestion(); 
+    }
   } else { if(ptWrap) ptWrap.style.display='none'; }
 
   if(quiz.status!=='running'){ if(timerEl){timerEl.textContent=quiz.timerLimit||'—';timerEl.className='timer-big';} if(bar){bar.style.width='100%';bar.className='tbar';} if(rtEl) rtEl.textContent=''; return; }
@@ -1477,6 +1484,45 @@ function openQuizAction(id, type){
   }
   
   openModal('modal-quiz-action');
+}
+
+function advanceToNextQuestion(){
+  const quiz=Store.getQuiz(), teams=Store.getActiveTeams(), rounds=Store.getRounds(), settings=Store.getSettings();
+  if(!quiz||quiz.status==='finished') return;
+
+  const nextGQ = quiz.globalQIdx + 1;
+  const range = getRoundQRange(rounds, quiz.currentRoundIdx);
+  const isEndRound = (quiz.currentQInRound + 1) >= range.count;
+
+  if(isEndRound){
+     endRound();
+     return;
+  }
+
+  const nextStartTeam = (quiz.questionStartTeamIdx + 1) % teams.length;
+  const r = rounds[quiz.currentRoundIdx];
+
+  const q2 = {
+    ...quiz,
+    status: 'running',
+    globalQIdx: nextGQ,
+    currentQInRound: quiz.currentQInRound + 1,
+    questionStartTeamIdx: nextStartTeam,
+    currentTeamIdx: nextStartTeam,
+    passChain: [],
+    participantTurn: false,
+    participantTimerStart: null,
+    timerStart: Date.now(),
+    timerLimit: r?.timePerQuestion || settings.defaultTimePerQuestion || 60,
+    _timerEndHandled: false,
+    _participantTimerHandled: false,
+    _advancing: false
+  };
+
+  Store.saveQuiz(q2);
+  Store.addActivity(`⏭ Moving to Q${q2.currentQInRound+1} → <strong>${teams[nextStartTeam]?.name}</strong>`, 'info');
+  toast(`Question ${q2.currentQInRound+1}!`, 'info');
+  renderControl();
 }
 
 function submitQuizAction(){

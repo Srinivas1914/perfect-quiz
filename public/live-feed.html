@@ -252,6 +252,11 @@
           return `<div style="aspect-ratio:4/3; background:black; border-radius:4px; overflow:hidden; position:relative; border:1px solid ${t.id===(activeTeam?.id)?'var(--gold)':'var(--border)'}">
             ${frame ? `<img src="${frame}" style="width:100%; height:100%; object-fit:cover">` : '<div style="height:100%; display:flex; align-items:center; justify-content:center; font-size:8px; color:#444">OFF</div>'}
             <div style="position:absolute; bottom:2px; left:2px; font-size:6px; background:rgba(0,0,0,0.6); padding:1px 3px; border-radius:2px">T${t.teamNumber}</div>
+            <div class="cam-btns" style="position:absolute; top:2px; right:2px; display:flex; flex-direction:column; gap:2px">
+               <button onclick="liveAction('warn','${t.id}', event)" style="background:#ef4444; border:none; color:white; font-size:6px; padding:2px; border-radius:2px; cursor:pointer" title="Warn">⚠️</button>
+               <button onclick="liveAction('msg','${t.id}', event)" style="background:#06b6d4; border:none; color:black; font-size:6px; padding:2px; border-radius:2px; cursor:pointer" title="Message">💬</button>
+               <button onclick="liveAction('hold','${t.id}', event)" style="background:#eab308; border:none; color:black; font-size:6px; padding:2px; border-radius:2px; cursor:pointer" title="Hold">🛑</button>
+            </div>
           </div>`;
         }).join('');
       }
@@ -328,6 +333,27 @@
         toast(data.msg || (data.type==='warn'?'Official Warning Sent':''));
       }
     });
+
+    function liveAction(type, teamId, event){
+      if(event) event.stopPropagation();
+      const t = teams.find(x => x.id === teamId);
+      if(!t) return;
+      
+      let msg = "";
+      if(type === 'warn') msg = prompt(`Send WARNING to ${t.name}:`, "Suspicious activity detected! Please focus on the quiz.");
+      if(type === 'msg') msg = prompt(`Send MESSAGE to ${t.name}:`);
+      
+      if(type === 'hold'){
+        const isHeld = !!(quiz.holdStatus && quiz.holdStatus[teamId]);
+        socket.emit('admin_cmd', { type: 'hold', target: teamId, status: !isHeld });
+        toast(`${t.name} ${!isHeld ? 'HELD' : 'RELEASED'}`);
+        return;
+      }
+      
+      if(!msg) return;
+      socket.emit('admin_cmd', { type, target: teamId, msg });
+      toast(`${type.toUpperCase()} sent to ${t.name}`);
+    }
 
   </script>
 </body>

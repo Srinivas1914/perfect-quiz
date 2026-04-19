@@ -452,7 +452,16 @@ function genId(){ return '_'+Math.random().toString(36).substr(2,9); }
 
 function requireRole(role){
   const s=Store.getSession();
-  if(!s||s.role!==role){ window.location.href='/index.html'; return null; }
+  if(!s){
+     // Resiliency: Check if we have a token but session memory wiped
+     const token = Store.getToken();
+     if(token){
+       // Try to keep them on page while socket re-syncs
+       return { role: role, userId: 'reconnecting' };
+     }
+     window.location.href='/index.html'; return null;
+  }
+  if(s.role!==role && s.userId !== 'reconnecting'){ window.location.href='/index.html'; return null; }
   return s;
 }
 function requireAnyAuth(){
