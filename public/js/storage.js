@@ -340,13 +340,16 @@ const Store = {
   }
 };
 
-// Auto-push if we are admin and just connected
+// Auto-push is dangerous on connect as it can overwrite server with stale local data.
+// It should only be triggered by explicit user actions or a manual 'Force Sync' button.
+/* 
 if (socket) {
   socket.on('connect', () => {
     const s = Store.getSession();
     if(s && (s.role === 'admin' || s.isSuper)) Store.pushToBackend();
   });
 }
+*/
 
 // ─── ROUND HELPERS ─────────────────────────────────────────────
 function getRoundQRange(rounds, idx){

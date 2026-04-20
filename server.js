@@ -436,8 +436,8 @@ async function saveData(key, val) {
 
     // Persist to local file IMMEDIATELY (Safety Fallback)
     try {
-      // Using global fs
-      fs.writeFileSync(path.join(staticDir, 'data.json'), JSON.stringify(syncData, null, 2));
+      // Using global DATA_FILE path for consistency
+      fs.writeFileSync(DATA_FILE, JSON.stringify(syncData, null, 2));
     } catch(fsErr) {
       console.warn('[SERVER] File write failed, relying on memory:', fsErr.message);
     }
@@ -555,11 +555,27 @@ io.on('connection', (socket) => {
       // ─── USER LIST SYNC (SUPERADMIN ONLY) ───
       if (data.key === 'sq_users') {
           if (!decoded.isSuper) {
-             console.warn(`[SECURITY] Rejected: ${decoded.name} (${decoded.role}) tried to sync full sq_users list. Access Denied.`);
+             console.warn(`[SECURITY] Rejected: ${decoded.name} (${decoded.role}) tried to sync sq_users list. Access Denied.`);
              return; 
           }
-          // Superadmin can overwrite the whole list
-          console.log(`[SYNC] Superadmin ${decoded.name} updated global user list.`);
+          
+          // CRITICAL: Prevent accidental mass deletion if the list is empty and it shouldn't be
+          try {
+             const newUsers = JSON.parse(data.val || '[]');
+             const currentUsersStr = syncData['sq_users'];
+             const currentUsers = currentUsersStr ? JSON.parse(currentUsersStr) : [];
+             
+             // If local memory has many users but incoming is empty, treat as error/stale push
+             if (currentUsers.length > 5 && newUsers.length === 0) {
+                console.error(`[SYNC] BLOCKED: Superadmin ${decoded.name} tried to push an EMPTY user list over ${currentUsers.length} existing users. Stale cache?`);
+                return;
+             }
+             
+             console.log(`[SYNC] Superadmin ${decoded.name} updated global user list. Count: ${newUsers.length}`);
+          } catch(e) {
+             console.error('[SYNC] Failed to parse sq_users update:', e.message);
+             return;
+          }
       }
 
       // Permissions for sensitive configuration keys
