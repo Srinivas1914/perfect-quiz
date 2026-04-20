@@ -367,7 +367,7 @@ function getTotalConfiguredQs(rounds){ return rounds.reduce((s,r)=>s+(r.question
  * Moves to the next question with proper cyclic team assignment.
  * fromGlobalIdx helper prevents race conditions where multiple clients advance the same question.
  */
-function advanceToNextQuestion(fromGlobalIdx){
+function advanceToNextQuestion(fromGlobalIdx, overrideCycleHalt = false){
   const quiz = Store.getQuiz();
   const now = Date.now();
 
@@ -382,6 +382,10 @@ function advanceToNextQuestion(fromGlobalIdx){
     }
   }
 
+  // Lags & Auto-Pause Fix: Consolidate advancement logic and remove the cycle halt pause.
+  // The 'heart of the theme' is a smooth, continuous competition flow.
+  if (quiz._advancing && (now - (quiz._advancingTime || 0) < 1500)) return; // Strict throttle
+  
   try {
     quiz._advancing = true;
     quiz._advancingTime = now;
@@ -393,31 +397,40 @@ function advanceToNextQuestion(fromGlobalIdx){
     const range = getRoundQRange(rounds, quiz.currentRoundIdx);
 
     if(!teams.length){
-      console.warn('[QUIZ] No active teams to advance to.');
       quiz._advancing = false;
-      quiz._advancingTime = null;
       Store.saveQuiz(quiz);
       return;
     }
 
-    const nextStartTeam = (quiz.questionStartTeamIdx + 1) % teams.length;
     const nextQInRound = quiz.currentQInRound + 1;
     const nextGlobal   = quiz.globalQIdx + 1;
+    const teamsCount   = teams.length;
+
+    // Remove the blocking 'quiz.status = paused' logic.
+    // Instead, just warn the admin if the cycle is uneven.
+    if (!overrideCycleHalt && nextQInRound % teamsCount === 0) {
+       const questionsRemaining = range.count - nextQInRound;
+       if (questionsRemaining > 0 && questionsRemaining < teamsCount) {
+          // Trigger a notification instead of a hard pause
+          window.dispatchEvent(new CustomEvent('quiz_cycle_warning', { 
+            detail: { remaining: questionsRemaining, teamsCount, fromGlobalIdx } 
+          }));
+          // Continue flow immediately
+       }
+    }
+
+    const nextStartTeam = (quiz.questionStartTeamIdx + 1) % teamsCount;
     const r = rounds[quiz.currentRoundIdx];
 
     if(nextQInRound >= range.count || nextGlobal >= questions.length){
-      // Round over
-      const newQ = { ...quiz,
-        status: 'round_end',
-        passChain: [],
-        participantTurn: false,
-        participantTimerStart: null,
-        _timerEndHandled: false,
-        _participantTimerHandled: false,
-        _advancing: false,
-        _advancingTime: null
-      };
-      Store.saveQuiz(newQ);
+      // Round end: Clear advancing bit here
+      Store.saveQuiz({ ...quiz, 
+         status: 'round_end', 
+         _advancing: false, _advancingTime: null,
+         passChain: [], 
+         participantTurn: false,
+         participantTimerStart: null
+      });
       Store.addActivity(`🏁 Round ${quiz.currentRoundIdx+1} ended`, 'success');
       return;
     }
@@ -491,13 +504,11 @@ function formatTime(sec){
 }
 
 // ─── CROSS-TAB SYNC ────────────────────────────────────────────
+// ─── CROSS-TAB SYNC ────────────────────────────────────────────
 function onUpdate(cb){
   window.addEventListener('storage', e=>{
     if(!e.key) return;
-    const isBaseKey = Object.values(KEYS).some(k => e.key === k || e.key.startsWith(k + '_'));
-    if(isBaseKey || e.key.startsWith('sq_cam_')){
-      cb({ key: e.key });
-    }
+    cb({ key: e.key });
   });
   window.addEventListener('storage_sync', e => {
     cb({ key: e.detail.key });

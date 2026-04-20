@@ -51,7 +51,6 @@ async function doLogin(){
     Store.setToken(result.token);
     Store.setSession(result.session);
     
-    // Redirect based on role
     const role = result.session.role;
     if (result.session.isSuper) {
       Store.addActivity('Super Admin logged in','info', true);
@@ -59,6 +58,11 @@ async function doLogin(){
     } else if (role === 'admin') {
       Store.addActivity(`Admin logged in (Quiz: ${result.session.quizId})`,'info');
       window.location.href = '/admin';
+    } else if (role === 'user') {
+       // If they probably tried to login as admin but only have user role
+       alert('Access Pending: Your account has "User" rights. Please ask the Superadmin to promote you to "Admin" to access the dashboard.');
+       Store.addActivity(`User logged in: ${result.session.name}`,'info');
+       window.location.href = '/participant';
     } else if (role === 'participant' || role === 'team') {
        // Participant/Team might need camera check or just redirect
        pendingTeam = { ...result.session, name: result.session.name || result.session.teamName, id: result.session.userId || result.session.teamId, isParticipant: role==='participant' };

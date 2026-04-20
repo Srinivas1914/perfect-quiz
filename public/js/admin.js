@@ -35,6 +35,7 @@ function goSection(id){
   renderSec(id);
   if(id==='camera'){ startCamRefresh(); } else { stopCamRefresh(); }
 }
+function openCameraMonitor(){ window.open('/camera-monitor.html', '_blank', 'width=1200,height=800'); }
 function renderSec(id){
   if(id==='dashboard')  renderDashboard();
   if(id==='users')      renderUsers();
@@ -155,6 +156,21 @@ function renderDashboard(){
   ].map(([k,v])=>`<div class="info-row"><span class="text-muted">${k}</span><span>${v}</span></div>`).join('');
 
   // Team login status board
+  renderLoginStatusPanel();
+
+  renderScoreboard('d-scores');
+  renderTeamActivityGrid();
+  renderRecentActivity();
+  renderFeedback();
+  renderSpeedWinners();
+  renderLoginRecords();
+  renderAlertsBadge();
+  renderPerformanceSummary();
+  renderTopPerformers();
+}
+
+function renderLoginStatusPanel(){
+  const aTeams = Store.getActiveTeams();
   const loginBoardEl=document.getElementById('d-login-status');
   if(loginBoardEl){
     const lState = Store.getLoginStatus();
@@ -167,16 +183,6 @@ function renderDashboard(){
       </div>`;
     }).join(''):'<span class="text-muted text-sm">No active teams</span>';
   }
-
-  renderScoreboard('d-scores');
-  renderTeamActivityGrid();
-  renderRecentActivity();
-  renderFeedback();
-  renderSpeedWinners();
-  renderLoginRecords();
-  renderAlertsBadge();
-  renderPerformanceSummary();
-  renderTopPerformers();
 }
 
 function renderPerformanceSummary(){
@@ -745,33 +751,41 @@ function deleteRound(id){
 function moveRound(id,dir){ const rounds=Store.getRounds(); const idx=rounds.findIndex(r=>r.id===id); const ni=idx+dir; if(ni<0||ni>=rounds.length) return; [rounds[idx],rounds[ni]]=[rounds[ni],rounds[idx]]; Store.saveRounds(rounds); renderRounds(); }
 
 // ─── QUIZ TEMPLATES ───────────────────────────────────────────
-function openTemplatesModal(){
-  openModal('modal-templates');
-  updateTemplatePreview();
+function switchTmplTab(type){
+  document.querySelectorAll('#modal-templates .ltab').forEach(t=>t.classList.remove('active'));
+  document.querySelectorAll('#modal-templates .lpanel').forEach(p=>p.classList.remove('active'));
+  document.getElementById('tab-tmpl-'+type)?.classList.add('active');
+  document.getElementById('panel-tmpl-'+type)?.classList.add('active');
 }
 
-
-function onRoundsChange(){
+function autoSetTmplTime(){
   const r = parseInt(document.getElementById('tmpl-rounds').value);
   const tEl = document.getElementById('tmpl-time');
   const mapping = { 3: 30, 4: 35, 5: 40, 10: 50, 15: 60 };
-  if(mapping[r]) {
-    tEl.value = mapping[r];
-    const badge = document.getElementById('auto-set-badge-time');
-    badge.style.display = 'inline-block';
-    setTimeout(() => badge.style.display = 'none', 2000);
+  const targetTime = mapping[r] || Math.min(180, Math.max(5, r * 8));
+  
+  tEl.value = targetTime;
+  const badge = document.getElementById('auto-time-badge');
+  if(badge){
+    badge.classList.remove('hidden');
+    setTimeout(() => badge.classList.add('hidden'), 2000);
   }
+  updateTemplatePreview();
+}
+
+function openTemplatesModal(tab='quick'){
+  switchTmplTab(tab);
+  openModal('modal-templates');
   updateTemplatePreview();
 }
 
 function updateTemplatePreview(){
   const roundCount = parseInt(document.getElementById('tmpl-rounds')?.value || 3);
   const totalMins = parseInt(document.getElementById('tmpl-time')?.value || 30);
-  const qsPerRound = 5;
+  const qsPerRound = parseInt(document.getElementById('tmpl-qs')?.value || 5);
   const totalQs = roundCount * qsPerRound;
   const timePerQ = Math.floor((totalMins * 60) / totalQs);
 
-  
   // Calculate stage breakdown
   let stages = { Preliminary: 0, Selection: 0, Final: 0 };
   for(let i=1; i<=roundCount; i++){
@@ -795,11 +809,11 @@ function updateTemplatePreview(){
     <span style="color:var(--gold)">${stages.Selection} Selection</span> → 
     <span style="color:var(--green)">${stages.Final} Final</span>`;
 }
-function applyQuizTemplate(presetName = null, presetRounds = null, presetTime = null){
+function applyQuizTemplate(presetName = null, presetRounds = null, presetTime = null, presetQs = null){
   const roundCount = presetRounds || parseInt(document.getElementById('tmpl-rounds').value);
   const totalMins = presetTime || parseInt(document.getElementById('tmpl-time').value);
+  const qsPerRound = presetQs || parseInt(document.getElementById('tmpl-qs').value) || 5;
   const finalName = presetName || "Quick Setup";
-  const qsPerRound = 5;
   const totalQs = roundCount * qsPerRound;
   const timePerQ = Math.floor((totalMins * 60) / totalQs);
   
@@ -845,8 +859,8 @@ function applyQuizTemplate(presetName = null, presetRounds = null, presetTime = 
   });
 }
 
-function applyPreset(name, rounds, time){
-  applyQuizTemplate(name, rounds, time);
+function applyPreset(name, rounds, time, qs){
+  applyQuizTemplate(name, rounds, time, qs);
 }
 
 
@@ -1697,7 +1711,8 @@ onUpdate(({key})=>{
   if(isK(KEYS.ALERTS)) renderAlertsBadge();
   if(key.startsWith('sq_cam_')){ 
     if(currentSec==='camera') renderCamera(); 
-    if(currentSec==='dashboard') renderDashboard();
+    // DASHBOARD LAG FIX: Only update specific team status, don't re-render the whole dashboard
+    if(currentSec==='dashboard') renderLoginStatusPanel();
     if(currentSec==='control') renderLoginStatusPanel();
   }
 });
@@ -2045,8 +2060,14 @@ function exportCSV(){
   toast('CSV Export Successful!', 'success');
 }
 
-// Update goSection to handle reports (handled now in renderSec)
-// Removed previous override logic
+// Handle Quiz Cycle Fairness Warning (Non-blocking)
+window.addEventListener('quiz_cycle_warning', (e) => {
+  const { remaining, teamsCount } = e.detail;
+  toast(`⚖️ FAIRNESS ALERT: Only ${remaining} questions left for ${teamsCount} teams. Cycles may be imbalanced.`, 'warning', 8000);
+  
+  // Also log it
+  Store.addActivity(`⚖️ Round Imbalance detected (${remaining} questions left for ${teamsCount} teams)`, 'warning');
+});
 
 // End of Admin Script
 

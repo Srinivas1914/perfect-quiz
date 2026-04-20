@@ -60,7 +60,7 @@
       <div class="nav-item" data-sec="rounds" onclick="goSection('rounds')"><i>🔄</i><span>Rounds</span></div>
       <div class="nav-item" data-sec="questions" onclick="goSection('questions')"><i>❓</i><span>Questions</span></div>
       <div class="nav-item" data-sec="control" onclick="goSection('control')"><i>🎯</i><span>Quiz Control</span></div>
-      <div class="nav-item" data-sec="camera" onclick="goSection('camera')"><i>📷</i><span>Camera Monitor <span id="cam-alert-badge" class="badge badge-red hidden" style="font-size:8px;padding:1px 5px">0</span></span></div>
+      <div class="nav-item" data-sec="camera" onclick="openCameraMonitor()"><i>📷</i><span>Camera Monitor <span id="cam-alert-badge" class="badge badge-red hidden" style="font-size:8px;padding:1px 5px">0</span></span></div>
       <div class="nav-item" data-sec="activity" onclick="goSection('activity')"><i>📜</i><span>Activity</span></div>
       <div class="nav-item" data-sec="reports" onclick="goSection('reports')"><i>📊</i><span>Reports</span></div>
       <div class="nav-item" data-sec="settings" onclick="goSection('settings')"><i>⚙️</i><span>Settings</span></div>
@@ -183,7 +183,7 @@
         <h2>ROUND MANAGEMENT</h2>
         <div style="display:flex; gap:8px">
           <button class="btn-sm btn-gold" onclick="openTemplatesModal('gate')">🏛️ TEMPLATE GATE</button>
-          <button class="btn-sm btn-gold" onclick="openTemplatesModal('setup')">⚡ QUICK TEMPLATES</button>
+          <button class="btn-sm btn-gold" onclick="openTemplatesModal('quick')">⚡ QUICK TEMPLATES</button>
           <button id="btn-rounds-delete-multi" class="btn-sm btn-red hidden" onclick="deleteSelectedRounds()">🗑️ DELETE SELECTED</button>
           <button class="btn-sm btn-red" onclick="resetAllRounds()">🔄 RESET ALL</button>
           <button class="btn-sm btn-cyan" onclick="openAddRound()">+ ADD ROUND</button>
@@ -471,12 +471,15 @@
       <div class="frow">
         <div class="form-group">
           <label>NUMBER OF ROUNDS</label>
-          <select id="tmpl-rounds" onchange="autoSetTmplTime(); updateTemplatePreview()">
-            <option value="3">3 Rounds</option>
-            <option value="4">4 Rounds</option>
-            <option value="5">5 Rounds</option>
-            <option value="10">10 Rounds (Marathon)</option>
-            <option value="15">15 Rounds (Tournament)</option>
+          <input type="number" id="tmpl-rounds" value="5" min="1" max="50" oninput="autoSetTmplTime(); updateTemplatePreview()">
+        </div>
+        <div class="form-group">
+          <label>QUESTIONS PER ROUND</label>
+          <select id="tmpl-qs" onchange="updateTemplatePreview()">
+            <option value="3">3 Questions</option>
+            <option value="5" selected>5 Questions</option>
+            <option value="10">10 Questions</option>
+            <option value="15">15 Questions</option>
           </select>
         </div>
         <div class="form-group">

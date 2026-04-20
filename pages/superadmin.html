@@ -17,6 +17,23 @@
   /* KPI Clickable Styles */
   .kpi.clickable { cursor: pointer; position: relative; transition: all 0.2s ease; overflow: hidden; }
   .kpi.clickable:hover { transform: translateY(-3px); box-shadow: 0 8px 20px rgba(0,0,0,0.3); border-color: rgba(255,255,255,0.2); }
+  
+  /* Tabs for Template Modal */
+  .login-tabs { display: flex; border-bottom: 1px solid var(--border); margin-bottom: 16px; gap: 4px; }
+  .ltab { padding: 10px 16px; cursor: pointer; font-size: 12px; font-weight: 700; color: var(--muted); border-bottom: 2px solid transparent; transition: 0.2s; background: none; border: none; }
+  .ltab:hover { color: var(--gold); background: rgba(255,255,255,0.03); }
+  .ltab.active { color: var(--gold); border-bottom-color: var(--gold); background: rgba(255,215,0,0.05); }
+  
+  /* Template Gate Cards */
+  .preset-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .preset-card { background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 10px; padding: 14px; cursor: pointer; transition: 0.2s; text-align: left; }
+  .preset-card:hover { border-color: var(--gold); background: rgba(255,215,0,0.05); transform: translateY(-2px); }
+  .preset-card .p-title { font-weight: 800; font-size: 13px; color: var(--gold); margin-bottom: 8px; display: flex; align-items: center; justify-content: space-between; }
+  .preset-card .p-meta { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+  
+  /* Auto-set badge */
+  .badge-gold { background: var(--gold); color: black; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
@@ -44,7 +61,7 @@
       <div class="nav-item" data-sec="rounds" onclick="goSection('rounds')"><i>🔄</i><span>Rounds</span></div>
       <div class="nav-item" data-sec="questions" onclick="goSection('questions')"><i>❓</i><span>Questions</span></div>
       <div class="nav-item" data-sec="control" onclick="goSection('control')"><i>🎯</i><span>Quiz Control</span></div>
-      <div class="nav-item" data-sec="camera" onclick="goSection('camera')"><i>📷</i><span>Camera Monitor <span id="cam-alert-badge" class="badge badge-red hidden" style="font-size:8px;padding:1px 5px">0</span></span></div>
+      <div class="nav-item" data-sec="camera" onclick="openCameraMonitor()"><i>📷</i><span>Camera Monitor <span id="cam-alert-badge" class="badge badge-red hidden" style="font-size:8px;padding:1px 5px">0</span></span></div>
       <div class="nav-item" data-sec="activity" onclick="goSection('activity')"><i>📜</i><span>Activity</span></div>
       <div class="nav-item" data-sec="quiz-requests" onclick="goSection('quiz-requests')"><i>📨</i><span>Quiz Requests <span id="req-alert-badge" class="badge badge-gold hidden" style="font-size:8px;padding:1px 5px">0</span></span></div>
       <div class="nav-item" data-sec="managed-admins" onclick="goSection('managed-admins')"><i>🎓</i><span>Managed Admins</span></div>
@@ -433,12 +450,15 @@
       <div class="frow">
         <div class="form-group">
           <label>NUMBER OF ROUNDS</label>
-          <select id="tmpl-rounds" onchange="autoSetTmplTime(); updateTemplatePreview()">
-            <option value="3">3 Rounds</option>
-            <option value="4">4 Rounds</option>
-            <option value="5">5 Rounds</option>
-            <option value="10">10 Rounds (Marathon)</option>
-            <option value="15">15 Rounds (Tournament)</option>
+          <input type="number" id="tmpl-rounds" value="5" min="1" max="50" oninput="autoSetTmplTime(); updateTemplatePreview()">
+        </div>
+        <div class="form-group">
+          <label>QUESTIONS PER ROUND</label>
+          <select id="tmpl-qs" onchange="updateTemplatePreview()">
+            <option value="3">3 Questions</option>
+            <option value="5" selected>5 Questions</option>
+            <option value="10">10 Questions</option>
+            <option value="15">15 Questions</option>
           </select>
         </div>
         <div class="form-group">

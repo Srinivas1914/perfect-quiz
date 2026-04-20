@@ -27,6 +27,7 @@ function goSection(id){
   renderSec(id);
   if(id==='camera'){ startCamRefresh(); } else { stopCamRefresh(); }
 }
+function openCameraMonitor(){ window.open('/camera-monitor.html', '_blank', 'width=1200,height=800'); }
 function renderSec(id){
   if(id==='dashboard')  renderDashboard();
   if(id==='users')      renderUsers();
@@ -773,26 +774,30 @@ function switchTmplTab(type){
 }
 
 function autoSetTmplTime(){
-  const rounds = parseInt(document.getElementById('tmpl-rounds').value);
-  const timeMap = { 3:30, 4:35, 5:40, 10:50, 15:60 };
-  const target = timeMap[rounds] || 30;
-  document.getElementById('tmpl-time').value = target;
+  const r = parseInt(document.getElementById('tmpl-rounds').value);
+  const tEl = document.getElementById('tmpl-time');
+  const mapping = { 3:30, 4:35, 5:40, 10:50, 15:60 };
+  const target = mapping[r] || Math.min(180, Math.max(5, r * 8));
+  
+  if(tEl) tEl.value = target;
   
   const badge = document.getElementById('auto-time-badge');
-  badge?.classList.remove('hidden');
-  setTimeout(()=>badge?.classList.add('hidden'), 2000);
+  if(badge) {
+    badge.classList.remove('hidden');
+    setTimeout(()=>badge.classList.add('hidden'), 2000);
+  }
   updateTemplatePreview();
 }
 
-function applyPreset(name, rounds, time) {
-  applyQuizTemplate(name, rounds, time);
+function applyPreset(name, rounds, time, qs) {
+  applyQuizTemplate(name, rounds, time, qs);
 }
 
 function updateTemplatePreview(){
 
   const roundCount = parseInt(document.getElementById('tmpl-rounds')?.value || 3);
   const totalMins = parseInt(document.getElementById('tmpl-time')?.value || 30);
-  const qsPerRound = 5;
+  const qsPerRound = parseInt(document.getElementById('tmpl-qs')?.value || 5);
   const totalQs = roundCount * qsPerRound;
   const timePerQ = Math.floor((totalMins * 60) / totalQs);
   
@@ -820,11 +825,11 @@ function updateTemplatePreview(){
     <span style="color:var(--green)">${stages.Final} Final</span>`;
 }
 
-function applyQuizTemplate(presetName = null, presetRounds = null, presetTime = null){
+function applyQuizTemplate(presetName = null, presetRounds = null, presetTime = null, presetQs = null){
   const roundCount = presetRounds || parseInt(document.getElementById('tmpl-rounds').value);
   const totalMins = presetTime || parseInt(document.getElementById('tmpl-time').value);
+  const qsPerRound = presetQs || parseInt(document.getElementById('tmpl-qs').value) || 5;
   const finalName = presetName || "Quick Setup";
-  const qsPerRound = 5;
   const totalQs = roundCount * qsPerRound;
   const timePerQ = Math.floor((totalMins * 60) / totalQs);
   
@@ -1486,7 +1491,7 @@ function openQuizAction(id, type){
   openModal('modal-quiz-action');
 }
 
-function advanceToNextQuestion(){
+function advanceToNextQuestion(overrideCycleHalt = false){
   const quiz=Store.getQuiz(), teams=Store.getActiveTeams(), rounds=Store.getRounds(), settings=Store.getSettings();
   if(!quiz||quiz.status==='finished') return;
 
@@ -1499,14 +1504,30 @@ function advanceToNextQuestion(){
      return;
   }
 
-  const nextStartTeam = (quiz.questionStartTeamIdx + 1) % teams.length;
+  const nextQInRound = quiz.currentQInRound + 1;
+  const teamsCount = teams.length;
+
+  // --- CYCLE COMPLETENESS CHECK ---
+  if (!overrideCycleHalt && nextQInRound % teamsCount === 0) {
+     const questionsRemaining = range.count - nextQInRound;
+     if (questionsRemaining > 0 && questionsRemaining < teamsCount) {
+        quiz.status = 'paused';
+        Store.saveQuiz(quiz);
+        window.dispatchEvent(new CustomEvent('quiz_cycle_halt', { 
+          detail: { remaining: questionsRemaining, teamsCount } 
+        }));
+        return;
+     }
+  }
+
+  const nextStartTeam = (quiz.questionStartTeamIdx + 1) % teamsCount;
   const r = rounds[quiz.currentRoundIdx];
 
   const q2 = {
     ...quiz,
     status: 'running',
     globalQIdx: nextGQ,
-    currentQInRound: quiz.currentQInRound + 1,
+    currentQInRound: nextQInRound,
     questionStartTeamIdx: nextStartTeam,
     currentTeamIdx: nextStartTeam,
     passChain: [],
@@ -2210,3 +2231,28 @@ setInterval(()=>{
   const el = document.getElementById('sb-root-id');
   if(el) el.textContent = `ROOT ID: ${rootId}`;
 })();
+
+// Handle Quiz Cycle Completeness Halt
+window.addEventListener('quiz_cycle_halt', (e) => {
+  const { remaining, teamsCount } = e.detail;
+  const currentRoundIdx = Store.getQuiz().currentRoundIdx;
+  const rounds = Store.getRounds();
+  const r = rounds[currentRoundIdx];
+
+  const html = `
+    <div class="text-sm">
+      <p class="mb-2">⚠️ <strong>IMBALANCED CYCLE DETECTED</strong></p>
+      <p>Only <strong>${remaining} questions</strong> remain in this round, but there are <strong>${teamsCount} teams</strong>.</p>
+      <p class="mt-1 text-muted">Proceeding will mean ${teamsCount - remaining} teams won't get a turn to start in this cycle.</p>
+      <div class="mt-3" style="display:flex; flex-direction:column; gap:8px">
+        <button class="btn-main font-title" style="background:var(--gold); color:black; font-size:11px" onclick="advanceToNextQuestion(true); closeModal('modal-confirm')">⚡ PROCEED ANYWAY (IMBALANCED)</button>
+        <button class="btn-main font-title" style="background:var(--cyan); color:black; font-size:11px" onclick="closeModal('modal-confirm'); goSection('rounds'); openEditRound('${r?.id}')">➕ ADD ${teamsCount - remaining} MORE QUESTIONS</button>
+        <button class="btn-main font-title" style="background:var(--red); font-size:11px" onclick="endRound(); closeModal('modal-confirm')">🏁 END ROUND NOW</button>
+      </div>
+    </div>
+  `;
+  
+  customConfirm(html, '🚨', null);
+  const footer = document.querySelector('#modal-confirm .modal-foot');
+  if(footer) footer.style.display = 'none';
+});

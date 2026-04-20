@@ -52,13 +52,19 @@ app.get('/team/:name', (req, res) => res.sendFile(path.join(staticDir, 'pages/te
 app.post('/api/login', async (req, res) => {
   const { username, password, quizId } = req.body;
   const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret';
+  
+  console.log(`[AUTH] Login attempt: ${username} (QuizID: ${quizId || 'N/A'})`);
 
-  // 1. Check Super Admin
+  // 1. Check Super Admin (Hardcoded + Settings Fallback)
   const settingsStr = syncData['sq_settings'];
   const settings = settingsStr ? JSON.parse(settingsStr) : {};
-  if (username === (settings.adminUsername || 'srinivas') && password === (settings.adminPassword || 'sri@1119')) {
+  const superU = (settings.adminUsername && settings.adminUsername.trim()) ? settings.adminUsername : 'srinivas';
+  const superP = (settings.adminPassword && settings.adminPassword.trim()) ? settings.adminPassword : 'sri@1119';
+
+  if (username === superU && password === superP) {
+    console.log(`[AUTH] Super Admin login success: ${username}`);
     const token = jwt.sign({ role: 'admin', isSuper: true, name: 'Super Admin' }, JWT_SECRET, { expiresIn: '24h' });
-    return res.json({ success: true, token, session: { role: 'admin', isSuper: true } });
+    return res.json({ success: true, token, session: { role: 'admin', isSuper: true, name: 'Super Admin' } });
   }
 
   // 2. Check Database Users (Normal Admin, Participant, Viewer)
@@ -74,7 +80,7 @@ app.post('/api/login', async (req, res) => {
         const dbUsers = JSON.parse(dbDoc.val || '[]');
         user = dbUsers.find(u => u.username === username && u.password === password);
         if (user) {
-           console.log(`[AUTH] Login success via MongoDB Fallback for: ${username}`);
+           console.log(`[AUTH] Found user via MongoDB check: ${username}`);
            syncData['sq_users'] = dbDoc.val; // Refresh memory cache
         }
       }
@@ -82,22 +88,61 @@ app.post('/api/login', async (req, res) => {
   }
 
   if (user) {
+    console.log(`[AUTH] User login success: ${username} (Role: ${user.role})`);
     const claims = { userId: user.id, role: user.role, name: user.name, roll: user.roll, college: user.college, quizId: quizId || user.currentQuizId };
     const token = jwt.sign(claims, JWT_SECRET, { expiresIn: '24h' });
-    return res.json({ success: true, token, session: { role: user.role, userId: user.id, name: user.name, roll: user.roll, college: user.college, quizId: user.currentQuizId || quizId } });
+    return res.json({ 
+      success: true, 
+      token, 
+      session: { 
+        role: user.role, 
+        userId: user.id, 
+        name: user.name, 
+        roll: user.roll, 
+        college: user.college, 
+        quizId: user.currentQuizId || quizId 
+      } 
+    });
   }
 
   // 3. Check Teams
-  const teamsStr = syncData[`sq_teams${quizId ? '_' + quizId : ''}`];
+  if (!quizId) {
+     // Check if this username belongs to any team globally to see if they FORGOT the QuizID
+     const allKeys = Object.keys(syncData).filter(k => k.startsWith('sq_teams'));
+     for (const key of allKeys) {
+        const potentialTeams = JSON.parse(syncData[key] || '[]');
+        if (potentialTeams.find(t => t.username === username || t.name === username)) {
+           console.warn(`[AUTH] Team ${username} attempted login without Quiz ID`);
+           return res.status(401).json({ success: false, message: 'ENTER QUIZ ID' });
+        }
+     }
+  }
+
+  const teamsPKey = `sq_teams${quizId ? '_' + quizId : ''}`;
+  const teamsStr = syncData[teamsPKey];
   const teams = teamsStr ? JSON.parse(teamsStr) : [];
-  const team = teams.find(t => t.username === username && t.password === password);
+  let team = teams.find(t => (t.username === username || t.name === username) && t.password === password);
+  
+  if (!team && quizId) {
+     // Check if ID is wrong but team exists elsewhere
+     const allKeys = Object.keys(syncData).filter(k => k.startsWith('sq_teams'));
+     for (const key of allKeys) {
+        const potentialTeams = JSON.parse(syncData[key] || '[]');
+        if (potentialTeams.find(t => t.username === username || t.name === username)) {
+           console.warn(`[AUTH] Team ${username} used wrong/inactive Quiz ID: ${quizId}`);
+           return res.status(401).json({ success: false, message: 'ENTER ACTIVE QUIZ ID' });
+        }
+     }
+  }
   
   if (team) {
+    console.log(`[AUTH] Team login success: ${team.name} (Quiz: ${quizId || 'GLOBAL'})`);
     const token = jwt.sign({ teamId: team.id, role: 'team', name: team.name, quizId }, JWT_SECRET, { expiresIn: '24h' });
     return res.json({ success: true, token, session: { role: 'team', teamId: team.id, name: team.name, quizId } });
   }
 
-  return res.status(401).json({ success: false, message: 'Invalid credentials' });
+  console.warn(`[AUTH] Login failed for: ${username}`);
+  return res.status(401).json({ success: false, message: 'Invalid username or password' });
 });
 
 app.post('/api/register', async (req, res) => {
@@ -625,13 +670,18 @@ io.on('connection', (socket) => {
         return console.warn(`[SECURITY] Unauthorized config sync attempt: ${data.key} by ${decoded.name}`);
       }
 
-      if (data.key === 'sq_session') return; 
-      
       const timestamp = data._ts || Date.now();
       syncData[data.key] = data.val;
       syncData[`_ts_${data.key}`] = timestamp;
       
-      await saveData(data.key, data.val);
+      // LAG FIX: Skip DB persistence for high-frequency ephemeral data (camera frames & status)
+      // This drastically reduces I/O wait times and improves sync speed.
+      const isEphemeral = data.key.startsWith('sq_cam_') || data.key === 'sq_cam_status' || data.key === 'sq_activity';
+      
+      if (!isEphemeral) {
+        saveData(data.key, data.val).catch(e => console.error('[SYNC] DB save fail:', data.key, e.message));
+      }
+      
       socket.broadcast.emit('sync', { ...data, _ts: timestamp });
       
     } catch (err) {
